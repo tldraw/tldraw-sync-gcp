@@ -11,3 +11,19 @@
 
 # Environment
 .env
+
+
+# Terraform files
+.terraform/
+*.tfstate
+*.tfstate.*
+.terraformrc
+override.tf
+override.tf.json
+*-override.tf
+*-override.tf.json
+.terraform.d/
+
+# Sensitive variables (if not using a secure secrets management solution)
+*.tfvars
+!*.auto.tfvars

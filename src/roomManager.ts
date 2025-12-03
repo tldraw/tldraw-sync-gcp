@@ -8,6 +8,7 @@ import { WebSocket } from "ws";
 import { createClient } from "redis";
 import { getRoomSnapshot, persistRoomSnapshot } from "./gcsStorage.js";
 import throttle from "lodash.throttle";
+import { activeRoomsGauge } from "./metrics.js";
 
 // Create the Tldraw schema
 const schema = createTLSchema({
@@ -79,6 +80,7 @@ class RoomManager {
       // 3. Create the new room
       room = await this.createRoom(roomId);
       this.activeRooms.set(roomId, room);
+      activeRoomsGauge.inc();
       console.log(`[RoomManager] Room created: ${roomId}`);
 
       // 4. Connect the client
@@ -98,6 +100,7 @@ class RoomManager {
         clearInterval(lockHeartbeat);
         this.activeRooms.delete(roomId);
         redisClient.del(lockKey);
+        activeRoomsGauge.dec();
       });
     } catch (err) {
       console.error(`[RoomManager] Error acquiring lock for ${roomId}:`, err);

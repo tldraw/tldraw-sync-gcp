@@ -1,8 +1,8 @@
 import WebSocket from "ws";
 
 const ROOM_ID = "lock-test-room";
-const SERVER_A = "ws://34.72.170.12";
-const SERVER_B = "ws://34.72.170.12";
+const SERVER_A = "wss://gcp-sync.tldraw.xyz";
+const SERVER_B = "wss://gcp-sync.tldraw.xyz";
 
 async function runTest() {
   console.log("🧪 --- Starting Distributed Lock Test ---");

@@ -11,3 +11,4 @@
 
 # Environment
 .env
+.yarn

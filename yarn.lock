@@ -347,78 +347,78 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@tldraw/state@npm:4.1.2":
-  version: 4.1.2
-  resolution: "@tldraw/state@npm:4.1.2"
+"@tldraw/state@npm:4.2.0":
+  version: 4.2.0
+  resolution: "@tldraw/state@npm:4.2.0"
   dependencies:
-    "@tldraw/utils": "npm:4.1.2"
-  checksum: 10c0/900cdc25590cd08921b033dc4836b70061c7946dc227882207c262816cb75514f18642380caf25dd8b419b65f193e72e201336dfd6cbb1840e1f4dc20c20f601
+    "@tldraw/utils": "npm:4.2.0"
+  checksum: 10c0/258018b8ff900f367909c2c027cc45c9f34aafc7b654e2158c56ebf147fee7a1502d9f4aa022fa3a00b7960d4d02919e957bca3cd9e9339feb69858956543a70
   languageName: node
   linkType: hard
 
-"@tldraw/store@npm:4.1.2":
-  version: 4.1.2
-  resolution: "@tldraw/store@npm:4.1.2"
+"@tldraw/store@npm:4.2.0":
+  version: 4.2.0
+  resolution: "@tldraw/store@npm:4.2.0"
   dependencies:
-    "@tldraw/state": "npm:4.1.2"
-    "@tldraw/utils": "npm:4.1.2"
+    "@tldraw/state": "npm:4.2.0"
+    "@tldraw/utils": "npm:4.2.0"
   peerDependencies:
     react: ^18.2.0 || ^19.0.0
-  checksum: 10c0/28999e41c677b8f661aa4834edf888012ea88b713b8670aae2b9226fb72e9d6cada6368f7cc0d9c5f2ab585cd1908756f5443d15f3d4f19897b6b4b319dffdf8
+  checksum: 10c0/1b097012d62e2ad7866428d378ac1d948dd57c4fb9d4e18d7001ea1e8cee74873e28e3ad32104954ba223248318d1c0918d8be6fc76b0938eeb0104a2c105680
   languageName: node
   linkType: hard
 
-"@tldraw/sync-core@npm:^4.1.2":
-  version: 4.1.2
-  resolution: "@tldraw/sync-core@npm:4.1.2"
+"@tldraw/sync-core@npm:^4.2.0":
+  version: 4.2.0
+  resolution: "@tldraw/sync-core@npm:4.2.0"
   dependencies:
-    "@tldraw/state": "npm:4.1.2"
-    "@tldraw/store": "npm:4.1.2"
-    "@tldraw/tlschema": "npm:4.1.2"
-    "@tldraw/utils": "npm:4.1.2"
+    "@tldraw/state": "npm:4.2.0"
+    "@tldraw/store": "npm:4.2.0"
+    "@tldraw/tlschema": "npm:4.2.0"
+    "@tldraw/utils": "npm:4.2.0"
     nanoevents: "npm:^7.0.1"
     ws: "npm:^8.18.0"
   peerDependencies:
     react: ^18.2.0 || ^19.0.0
     react-dom: ^18.2.0 || ^19.0.0
-  checksum: 10c0/706711c93d535d250acfc307ce79b126fe5168e573a697894fe089a50686f3a3229377e85b032175375102dc80ad54c9c0c736fb32caa0e68170e54431e6ae39
+  checksum: 10c0/fb495ca6d51c92511117f460d2e85d0dda2da24eeea03675f3bc8f943f3a00c6665b8cd529cff7c173c9d17be931f7ab497c778162a80b03e3985f9f806640fd
   languageName: node
   linkType: hard
 
-"@tldraw/tlschema@npm:4.1.2, @tldraw/tlschema@npm:^4.1.2":
-  version: 4.1.2
-  resolution: "@tldraw/tlschema@npm:4.1.2"
+"@tldraw/tlschema@npm:4.2.0, @tldraw/tlschema@npm:^4.2.0":
+  version: 4.2.0
+  resolution: "@tldraw/tlschema@npm:4.2.0"
   dependencies:
-    "@tldraw/state": "npm:4.1.2"
-    "@tldraw/store": "npm:4.1.2"
-    "@tldraw/utils": "npm:4.1.2"
-    "@tldraw/validate": "npm:4.1.2"
+    "@tldraw/state": "npm:4.2.0"
+    "@tldraw/store": "npm:4.2.0"
+    "@tldraw/utils": "npm:4.2.0"
+    "@tldraw/validate": "npm:4.2.0"
   peerDependencies:
     react: ^18.2.0 || ^19.0.0
     react-dom: ^18.2.0 || ^19.0.0
-  checksum: 10c0/9e0c05410eab20e2ffbfc6bbd3d0402aa37f8439ee0b48dca3f5a21111d8dc5626512f4665fe9f9d8d0e095b90a2e8fa9efb9f41433554974634adc438db5731
+  checksum: 10c0/3a640665e56a8833235fc6b9c01e3655a1669908ad50d645a3d10b239de5279d515bb6b7b727c33d529489b53849be1c642f9034e492a7c32f515a19a7bdc5aa
   languageName: node
   linkType: hard
 
-"@tldraw/utils@npm:4.1.2":
-  version: 4.1.2
-  resolution: "@tldraw/utils@npm:4.1.2"
+"@tldraw/utils@npm:4.2.0":
+  version: 4.2.0
+  resolution: "@tldraw/utils@npm:4.2.0"
   dependencies:
     jittered-fractional-indexing: "npm:^1.0.0"
     lodash.isequal: "npm:^4.5.0"
     lodash.isequalwith: "npm:^4.4.0"
     lodash.throttle: "npm:^4.1.1"
     lodash.uniq: "npm:^4.5.0"
-  checksum: 10c0/2f2a38c179b46868ad2712cd4e7429174deecaa9b3775944e9705cf43cb7a637591e6f381ed9e010af458e1d25d44de51c35e4b5ea172c65633af6ca3eb19672
+  checksum: 10c0/397900195ebffda72f1ccc31b7bdc686856b0a4d8ce31e708e0ce8a774898240ff7d08462e5308bba59f1d459bfb84523378d033d6291ac3b0ebb0583796e591
   languageName: node
   linkType: hard
 
-"@tldraw/validate@npm:4.1.2":
-  version: 4.1.2
-  resolution: "@tldraw/validate@npm:4.1.2"
+"@tldraw/validate@npm:4.2.0":
+  version: 4.2.0
+  resolution: "@tldraw/validate@npm:4.2.0"
   dependencies:
-    "@tldraw/utils": "npm:4.1.2"
-  checksum: 10c0/8f8731d83eb7aec22d49b6368f579f996360a2b7e6d76dbd665b545ce1c84c726e8c49c90c9aed3082482625e6c376e459a94c579577b728ad013b9779d91f1d
+    "@tldraw/utils": "npm:4.2.0"
+  checksum: 10c0/e26d7299356194761048bd4eec4a4ce608f59da4771bf5b9e05977761ac7bebf7e968ece9cf9a8b96d214e4c8001d8b61fc7a48987415ec0a28f98975d243d5e
   languageName: node
   linkType: hard
 
@@ -2674,8 +2674,8 @@ __metadata:
   resolution: "tldraw-sync-gcp@workspace:."
   dependencies:
     "@google-cloud/storage": "npm:^7.17.3"
-    "@tldraw/sync-core": "npm:^4.1.2"
-    "@tldraw/tlschema": "npm:^4.1.2"
+    "@tldraw/sync-core": "npm:^4.2.0"
+    "@tldraw/tlschema": "npm:^4.2.0"
     "@types/express": "npm:^4.17.21"
     "@types/lodash.throttle": "npm:^4.1.9"
     "@types/node": "npm:^20.12.12"

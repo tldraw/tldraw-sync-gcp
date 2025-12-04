@@ -12,8 +12,8 @@
   },
   "dependencies": {
     "@google-cloud/storage": "^7.17.3",
-    "@tldraw/sync-core": "^4.1.2",
-    "@tldraw/tlschema": "^4.1.2",
+    "@tldraw/sync-core": "^4.2.0",
+    "@tldraw/tlschema": "^4.2.0",
     "dotenv": "^17.2.3",
     "express": "^5.1.0",
     "lodash.throttle": "^4.1.1",

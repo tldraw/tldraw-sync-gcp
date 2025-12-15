@@ -59,7 +59,7 @@ jobs:
     - name: Update Kubernetes deployment image
       run: |
         kubectl set image deployment/${{ env.DEPLOYMENT_NAME }} \
-          ${{ env.IMAGE_NAME }}=${{ env.GAR_LOCATION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ github.sha }} \
+          tldraw-sync=${{ env.GAR_LOCATION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ github.sha }} \
           -n ${{ env.NAMESPACE }} 
 
     - name: Verify deployment rollout

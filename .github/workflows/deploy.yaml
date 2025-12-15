@@ -53,6 +53,7 @@ jobs:
 
     - name: Get GKE credentials
       run: |
+        gcloud components install gke-gcloud-auth-plugin
         gcloud container clusters get-credentials ${{ env.GKE_CLUSTER }} --region ${{ env.REGION }} --dns-endpoint
 
     - name: Update Kubernetes deployment image

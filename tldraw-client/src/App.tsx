@@ -5,6 +5,7 @@ import {
 } from "react-router-dom";
 import { Room } from "./Room";
 import { uniqueId } from "tldraw";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 
 function Root() {
   const randomId = uniqueId();
@@ -18,7 +19,15 @@ const router = createBrowserRouter([
   },
   {
     path: "/:roomId",
-    element: <Room />,
+    element: (
+      <ErrorBoundary>
+        <Room />
+      </ErrorBoundary>
+    ),
+  },
+  {
+    path: "*",
+    element: <div style={{ padding: 20 }}>404: Page Not Found</div>,
   },
 ]);
 

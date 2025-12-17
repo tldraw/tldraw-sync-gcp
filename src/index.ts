@@ -46,7 +46,8 @@ app.get("/metrics", async (req, res) => {
     res.setHeader("Content-Type", register.contentType);
     res.send(await register.metrics());
   } catch (err) {
-    res.status(500).send(err);
+    console.error("[Metrics] Failed to generate metrics:", err);
+    res.status(500).send("Internal Server Error: Metrics unavailable");
   }
 });
 
@@ -101,4 +102,30 @@ wss.on(
   }
 );
 
-server.listen(port);
+// --- NEW: Graceful Shutdown Implementation ---
+async function handleShutdown(signal: string) {
+  console.log(`\n[${signal}] Signal received. Starting graceful shutdown...`);
+
+  // 1. Stop accepting new HTTP/WS connections
+  server.close(() => {
+    console.log("HTTP/WS server closed.");
+  });
+
+  // 2. Tell RoomManager to save state and unlock rooms
+  try {
+    await roomManager.shutdown();
+  } catch (err) {
+    console.error("Error during RoomManager shutdown:", err);
+    process.exit(1);
+  }
+
+  console.log("Graceful shutdown successful. Exiting.");
+  process.exit(0);
+}
+
+process.on("SIGTERM", () => handleShutdown("SIGTERM"));
+process.on("SIGINT", () => handleShutdown("SIGINT"));
+
+server.listen(port, () => {
+  console.log(`Server listening on port ${port}`);
+});

@@ -12,6 +12,8 @@ export async function handleUnfurlRequest(req: Request, res: Response) {
     const { result, error } = await ogs({ url });
 
     if (error) {
+      // It's safer to return a generic 500 here than exposing upstream error details directly
+      console.error("[Unfurl] OGS Error:", result);
       return res.status(500).json({ error: "Failed to fetch URL metadata" });
     }
 
@@ -23,7 +25,9 @@ export async function handleUnfurlRequest(req: Request, res: Response) {
     };
 
     res.json(preview);
-  } catch (err: any) {
+  } catch (err: unknown) {
+    // FIX: Log the actual error, but send a generic message to client
+    console.error("[Unfurl] Internal Error:", err);
     res.status(500).json({ error: "Internal server error during unfurl" });
   }
 }

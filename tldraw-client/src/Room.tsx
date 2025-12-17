@@ -34,7 +34,7 @@ export function Room() {
 
   // 2. Room ID Validation (Alphanumeric + hyphens only)
   // This prevents malicious strings from being sent to the backend
-  if (!roomId || !/^[a-zA-Z0-9-]+$/.test(roomId)) {
+  if (!roomId || !/^[a-zA-Z0-9-_]+$/.test(roomId)) {
     return (
       <div style={{ padding: 20, color: "red" }}>
         <h2>Invalid Room ID</h2>

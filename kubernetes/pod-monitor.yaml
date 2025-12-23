@@ -1,0 +1,13 @@
+apiVersion: monitoring.googleapis.com/v1
+kind: PodMonitoring
+metadata:
+  name: app-monitoring
+spec:
+  selector:
+    matchLabels:
+      app: tldraw-sync
+  endpoints:
+  - port: 3001
+    interval: 30s
+    path: /metrics
+    

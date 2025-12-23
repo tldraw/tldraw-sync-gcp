@@ -27,3 +27,4 @@ override.tf.json
 # Sensitive variables (if not using a secure secrets management solution)
 *.tfvars
 !*.auto.tfvars
+.yarn

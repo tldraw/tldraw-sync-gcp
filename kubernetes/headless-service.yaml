@@ -1,0 +1,18 @@
+# Headless Service for direct pod-to-pod communication
+# Enables DNS resolution: <pod-name>.tldraw-sync-headless.<namespace>.svc.cluster.local
+# Used for WebSocket proxying when a pod needs to forward connections to the room owner
+apiVersion: v1
+kind: Service
+metadata:
+  name: tldraw-sync-headless
+  labels:
+    app: tldraw-sync
+spec:
+  clusterIP: None  # Headless - enables direct pod DNS
+  selector:
+    app: tldraw-sync
+  ports:
+  - name: http
+    port: 3001
+    targetPort: 3001
+    protocol: TCP

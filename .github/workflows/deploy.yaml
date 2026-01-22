@@ -56,11 +56,20 @@ jobs:
         gcloud components install gke-gcloud-auth-plugin
         gcloud container clusters get-credentials ${{ env.GKE_CLUSTER }} --region ${{ env.REGION }} --dns-endpoint
 
-    - name: Update Kubernetes deployment image
+    - name: Apply Kubernetes manifests
       run: |
-        kubectl set image deployment/${{ env.DEPLOYMENT_NAME }} \
-          tldraw-sync=${{ env.GAR_LOCATION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ github.sha }} \
-          -n ${{ env.NAMESPACE }} 
+        IMAGE_TAG="${{ env.GAR_LOCATION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
+        
+        # Replace placeholders in deployment.yaml
+        sed -i "s|<project-id>|${{ secrets.GCP_PROJECT_ID }}|g" kubernetes/deployment.yaml
+        sed -i "s|<redis-ip>|${{ secrets.REDIS_IP }}|g" kubernetes/deployment.yaml
+        sed -i "s|image: .*tldraw-gcp:.*|image: ${IMAGE_TAG}|" kubernetes/deployment.yaml
+        
+        # Apply all manifests in correct order
+        kubectl apply -f kubernetes/service-account.yaml -n ${{ env.NAMESPACE }}
+        kubectl apply -f kubernetes/rbac.yaml -n ${{ env.NAMESPACE }}
+        kubectl apply -f kubernetes/headless-service.yaml -n ${{ env.NAMESPACE }}
+        kubectl apply -f kubernetes/deployment.yaml -n ${{ env.NAMESPACE }}
 
     - name: Verify deployment rollout
       run: |

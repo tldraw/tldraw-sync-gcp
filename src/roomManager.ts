@@ -104,7 +104,7 @@ class RoomManager {
     activeRoomsGauge.dec();
 
     // 3. Delete the Lock from Redis
-    const lockKey = lock:room:${roomId};
+    const lockKey = `lock:room:${roomId}`;
     await redisClient.del(lockKey);
   }
 
@@ -130,7 +130,7 @@ class RoomManager {
       return;
     }
 
-    const lockKey = lock:room:${roomId};
+    const lockKey = `lock:room:${roomId}`;
 
     // 2. Try to Acquire Lock
     const lockAcquired = await redisClient.set(lockKey, POD_NAME, {
@@ -189,7 +189,7 @@ class RoomManager {
         activeRoomsGauge.dec();
       });
     } catch (err) {
-      console.error([RoomManager] Failed to init room ${roomId}:, err);
+      console.error(`[RoomManager] Failed to init room ${roomId}:`, err);
       safeWs.close(1011, "Internal Error");
     }
   }
@@ -207,7 +207,7 @@ class RoomManager {
         promises.push(persistRoomSnapshot(roomId, snapshot));
       }
       // Release lock immediately
-      promises.push(redisClient.del(lock:room:${roomId}).then(() => {}));
+      promises.push(redisClient.del(`lock:room:${roomId}`).then(() => {}));
     }
 
     await Promise.allSettled(promises);

@@ -63,7 +63,7 @@ async function updateDeletionCost(activeRoomCount: number): Promise<void> {
       `[PodAnnotator] Updated pod-deletion-cost to ${newCost} (${activeRoomCount} active rooms)`
     );
   } catch (err: any) {
-    if (err?.response?.statusCode === 403) {
+    if (err?.code === 403) {
       console.warn(
         "[PodAnnotator] RBAC not configured (403 Forbidden). Disabling pod-deletion-cost updates. " +
           "This is optional - the app will work without it. To enable, apply kubernetes/rbac.yaml"
@@ -117,7 +117,7 @@ export async function stopPodAnnotator(): Promise<void> {
       );
       console.log("[PodAnnotator] Set pod-deletion-cost to 0 (draining).");
     } catch (err: any) {
-      if (err?.response?.statusCode !== 403) {
+      if (err?.code !== 403) {
         console.error("[PodAnnotator] Failed to reset pod annotation:", err?.message || err);
       }
     }

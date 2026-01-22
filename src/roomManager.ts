@@ -18,9 +18,14 @@ const LOCK_TIMEOUT_SEC = 10;
 const THROTTLE_SAVE_MS = 10_000;
 const HEARTBEAT_INTERVAL_MS = (LOCK_TIMEOUT_SEC / 2) * 1000;
 const SOCKET_CLEANUP_DELAY_MS = 2000;
-const DRAIN_CHECK_INTERVAL_MS = 1000;
-const MAX_DRAIN_WAIT_BEFORE_TERMINATION_MS = 270_000;
 const PROXY_HANDSHAKE_TIMEOUT_MS = 5000;
+
+function sanitizeCloseCode(code: number | undefined): number {
+  if (code && code >= 1000 && code <= 4999) {
+    return code;
+  }
+  return 1000;
+}
 
 const POD_NAME = process.env.POD_NAME || `local-${process.pid}`;
 const POD_NAMESPACE = process.env.POD_NAMESPACE || "default";
@@ -159,44 +164,9 @@ class RoomManager {
   public async shutdown(): Promise<void> {
     this._isShuttingDown = true;
     console.log(
-      `[RoomManager] Starting graceful drain with ${this.activeRooms.size} active rooms...`
+      `[RoomManager] Starting shutdown with ${this.activeRooms.size} active rooms...`
     );
-
-    if (this.activeRooms.size > 0) {
-      await this.waitForRoomsToDrain();
-    }
-
     await this.finalizeShutdown();
-  }
-
-  private waitForRoomsToDrain(): Promise<void> {
-    return new Promise((resolve) => {
-      const startTime = Date.now();
-
-      const checkInterval = setInterval(() => {
-        const elapsed = Date.now() - startTime;
-        const remaining = this.activeRooms.size;
-
-        console.log(
-          `[RoomManager] Draining: ${remaining} rooms remaining, ${Math.round(elapsed / 1000)}s elapsed`
-        );
-
-        if (remaining === 0) {
-          clearInterval(checkInterval);
-          console.log("[RoomManager] All rooms drained. Proceeding with shutdown.");
-          resolve();
-          return;
-        }
-
-        if (elapsed >= MAX_DRAIN_WAIT_BEFORE_TERMINATION_MS) {
-          clearInterval(checkInterval);
-          console.log(
-            `[RoomManager] Drain timeout reached (${MAX_DRAIN_WAIT_BEFORE_TERMINATION_MS / 1000}s). Force shutting down ${remaining} rooms.`
-          );
-          resolve();
-        }
-      }, DRAIN_CHECK_INTERVAL_MS);
-    });
   }
 
   private async finalizeShutdown(): Promise<void> {
@@ -299,15 +269,15 @@ class RoomManager {
       });
     });
 
-    clientWs.on("close", (code, reason) => {
+    clientWs.on("close", (code) => {
       if (targetWs.readyState === WebSocket.OPEN || targetWs.readyState === WebSocket.CONNECTING) {
-        targetWs.close(code, reason);
+        targetWs.close(sanitizeCloseCode(code));
       }
     });
 
-    targetWs.on("close", (code, reason) => {
+    targetWs.on("close", (code) => {
       if (clientWs.readyState === WebSocket.OPEN) {
-        clientWs.close(code, reason);
+        clientWs.close(sanitizeCloseCode(code));
       }
     });
 

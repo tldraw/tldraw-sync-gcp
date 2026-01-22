@@ -67,7 +67,10 @@ jobs:
         
         # Apply all manifests in correct order
         kubectl apply -f kubernetes/service-account.yaml -n ${{ env.NAMESPACE }}
-        kubectl apply -f kubernetes/rbac.yaml -n ${{ env.NAMESPACE }}
+        
+        # RBAC requires cluster-admin permissions - skip if already applied or no permissions
+        kubectl apply -f kubernetes/rbac.yaml -n ${{ env.NAMESPACE }} 2>/dev/null || echo "⚠️  RBAC skipped (already exists or requires manual apply with cluster-admin)"
+        
         kubectl apply -f kubernetes/headless-service.yaml -n ${{ env.NAMESPACE }}
         kubectl apply -f kubernetes/deployment.yaml -n ${{ env.NAMESPACE }}
 

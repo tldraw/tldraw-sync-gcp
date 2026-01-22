@@ -1,0 +1,23 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: tldraw-sync-pod-patcher
+  namespace: default
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: tldraw-sync-pod-patcher-binding
+  namespace: default
+subjects:
+- kind: ServiceAccount
+  name: tldraw-sync-sa
+  namespace: default
+roleRef:
+  kind: Role
+  name: tldraw-sync-pod-patcher
+  apiGroup: rbac.authorization.k8s.io

@@ -30,3 +30,15 @@ export const errorCounter = new client.Counter({
   labelNames: ["type"],
   registers: [register],
 });
+
+export const proxyConnectionsCounter = new client.Counter({
+  name: "tldraw_proxy_connections_total",
+  help: "Total WebSocket connections proxied to other pods",
+  registers: [register],
+});
+
+export const proxyErrorsCounter = new client.Counter({
+  name: "tldraw_proxy_errors_total",
+  help: "Total proxy connection failures",
+  registers: [register],
+});

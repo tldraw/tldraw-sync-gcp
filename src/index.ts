@@ -13,6 +13,7 @@ import {
   errorCounter,
 } from "./metrics.js";
 import { roomManager } from "./roomManager.js";
+import { startPodAnnotator, stopPodAnnotator } from "./podAnnotator.js";
 
 const app = express();
 const port = process.env.PORT || 3001;
@@ -69,10 +70,16 @@ server.on("upgrade", (request: IncomingMessage, socket, head) => {
   const roomMatch = pathname.match(/\/api\/connect\/(.*)/);
   const roomId = roomMatch?.[1];
   const sessionId = searchParams.get("sessionId");
+  const isProxied = searchParams.get("proxied") === "true";
+
+  if (roomManager.isShuttingDown && !isProxied) {
+    socket.destroy();
+    return;
+  }
 
   if (roomMatch && roomId && sessionId) {
     wss.handleUpgrade(request, socket, head, (ws) => {
-      wss.emit("connection", ws, request, roomId, sessionId);
+      wss.emit("connection", ws, request, roomId, sessionId, isProxied);
     });
   } else {
     socket.destroy();
@@ -85,7 +92,8 @@ wss.on(
     ws: WebSocket,
     request: IncomingMessage,
     roomId: string,
-    sessionId: string
+    sessionId: string,
+    isProxied: boolean
   ) => {
     activeConnectionsGauge.inc();
 
@@ -94,7 +102,7 @@ wss.on(
     });
 
     try {
-      roomManager.getOrCreateRoom(roomId, ws, sessionId);
+      roomManager.getOrCreateRoom(roomId, ws, sessionId, isProxied);
     } catch (err) {
       errorCounter.inc({ type: "websocket_error" });
       ws.close(1011, "Internal server error");
@@ -102,16 +110,15 @@ wss.on(
   }
 );
 
-// --- NEW: Graceful Shutdown Implementation ---
 async function handleShutdown(signal: string) {
   console.log(`\n[${signal}] Signal received. Starting graceful shutdown...`);
 
-  // 1. Stop accepting new HTTP/WS connections
+  await stopPodAnnotator();
+
   server.close(() => {
     console.log("HTTP/WS server closed.");
   });
 
-  // 2. Tell RoomManager to save state and unlock rooms
   try {
     await roomManager.shutdown();
   } catch (err) {
@@ -128,4 +135,5 @@ process.on("SIGINT", () => handleShutdown("SIGINT"));
 
 server.listen(port, () => {
   console.log(`Server listening on port ${port}`);
+  startPodAnnotator(() => roomManager.getActiveRoomCount());
 });

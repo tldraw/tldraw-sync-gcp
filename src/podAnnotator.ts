@@ -11,6 +11,7 @@ const POD_NAMESPACE = process.env.POD_NAMESPACE || "default";
 let k8sApi: k8s.CoreV1Api | null = null;
 let updateInterval: NodeJS.Timeout | null = null;
 let lastKnownCost: number | null = null;
+let disabled = false;
 
 function initializeK8sClient(): boolean {
   if (!POD_NAME) {
@@ -35,7 +36,7 @@ function initializeK8sClient(): boolean {
 }
 
 async function updateDeletionCost(activeRoomCount: number): Promise<void> {
-  if (!k8sApi || !POD_NAME) return;
+  if (!k8sApi || !POD_NAME || disabled) return;
 
   const newCost = activeRoomCount * COST_PER_ROOM;
 
@@ -61,15 +62,23 @@ async function updateDeletionCost(activeRoomCount: number): Promise<void> {
     console.log(
       `[PodAnnotator] Updated pod-deletion-cost to ${newCost} (${activeRoomCount} active rooms)`
     );
-  } catch (err) {
-    console.error("[PodAnnotator] Failed to update pod annotation:", err);
+  } catch (err: any) {
+    if (err?.response?.statusCode === 403) {
+      console.warn(
+        "[PodAnnotator] RBAC not configured (403 Forbidden). Disabling pod-deletion-cost updates. " +
+          "This is optional - the app will work without it. To enable, apply kubernetes/rbac.yaml"
+      );
+      disabled = true;
+      if (updateInterval) {
+        clearInterval(updateInterval);
+        updateInterval = null;
+      }
+    } else {
+      console.error("[PodAnnotator] Failed to update pod annotation:", err?.message || err);
+    }
   }
 }
 
-/**
- * Starts periodic annotation updates based on active room count.
- * @param getActiveRoomCount - Function that returns current number of active rooms
- */
 export function startPodAnnotator(getActiveRoomCount: () => number): void {
   if (!initializeK8sClient()) return;
 
@@ -84,16 +93,13 @@ export function startPodAnnotator(getActiveRoomCount: () => number): void {
   );
 }
 
-/**
- * Stops the annotator and sets deletion cost to 0 (ready for termination).
- */
 export async function stopPodAnnotator(): Promise<void> {
   if (updateInterval) {
     clearInterval(updateInterval);
     updateInterval = null;
   }
 
-  if (k8sApi && POD_NAME) {
+  if (k8sApi && POD_NAME && !disabled) {
     const patchBody = {
       metadata: {
         annotations: {
@@ -110,8 +116,10 @@ export async function stopPodAnnotator(): Promise<void> {
         options
       );
       console.log("[PodAnnotator] Set pod-deletion-cost to 0 (draining).");
-    } catch (err) {
-      console.error("[PodAnnotator] Failed to reset pod annotation:", err);
+    } catch (err: any) {
+      if (err?.response?.statusCode !== 403) {
+        console.error("[PodAnnotator] Failed to reset pod annotation:", err?.message || err);
+      }
     }
   }
 

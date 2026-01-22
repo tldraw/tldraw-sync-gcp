@@ -106,7 +106,7 @@ class RoomManager {
     activeRoomsGauge.dec();
 
     // 3. Delete the Lock from Redis
-    const lockKey = lock:room:${roomId};
+    const lockKey = `lock:room:${roomId}`;
     await redisClient.del(lockKey);
   }
 
@@ -153,7 +153,7 @@ class RoomManager {
 
     // 3. Start Loading Process (Wrapped in a Promise)
     const loadPromise = (async () => {
-      const lockKey = lock:room:${roomId};
+      const lockKey = `lock:room:${roomId}`;
 
       // A. Try to Acquire Lock
       const lockAcquired = await redisClient.set(lockKey, POD_NAME, {
@@ -211,14 +211,14 @@ class RoomManager {
         if (heartbeat) clearInterval(heartbeat);
         this.roomHeartbeats.delete(roomId);
         this.activeRooms.delete(roomId);
-        redisClient.del(lock:room:${roomId});
+        redisClient.del(`lock:room:${roomId}`);
         activeRoomsGauge.dec();
       });
     } catch (err: any) {
       if (err.message === "MIGRATION_NEEDED") {
         safeWs.close(1013, "Migrating room to new pod... please retry.");
       } else {
-        console.error([RoomManager] Failed to init room ${roomId}:, err);
+        console.error(`[RoomManager] Failed to init room ${roomId}:`, err);
         safeWs.close(1011, "Internal Error");
       }
     } finally {
@@ -239,7 +239,7 @@ class RoomManager {
       if (snapshot) {
         promises.push(persistRoomSnapshot(roomId, snapshot));
       }
-      promises.push(redisClient.del(lock:room:${roomId}).then(() => {}));
+      promises.push(redisClient.del(`lock:room:${roomId}`).then(() => {}));
     }
 
     await Promise.allSettled(promises);

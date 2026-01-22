@@ -63,18 +63,21 @@ class RoomManager {
   private activeRooms = new Map<string, TLSocketRoom<TLRecord, void>>();
   private roomHeartbeats = new Map<string, NodeJS.Timeout>();
 
+  // NEW: Cache to deduplicate concurrent loading requests
+  private loadingRooms = new Map<
+    string,
+    Promise<TLSocketRoom<TLRecord, void>>
+  >();
+
   constructor() {
     this.initHandoverListener();
   }
 
   // --- Handover Listener ---
-  // Listens for requests from other pods to release a room
   private async initHandoverListener() {
     await subClient.subscribe("room-handover", async (message) => {
       try {
         const request: HandoverRequest = JSON.parse(message);
-
-        // If I own the room requested, I must release it immediately
         if (this.activeRooms.has(request.roomId)) {
           await this.releaseRoom(request.roomId);
         }
@@ -85,7 +88,6 @@ class RoomManager {
   }
 
   // --- Release Room Logic ---
-  // Force saves state and releases the lock so the new owner can take it
   private async releaseRoom(roomId: string) {
     const room = this.activeRooms.get(roomId);
     if (!room) return;
@@ -104,7 +106,7 @@ class RoomManager {
     activeRoomsGauge.dec();
 
     // 3. Delete the Lock from Redis
-    const lockKey = `lock:room:${roomId}`;
+    const lockKey = lock:room:${roomId};
     await redisClient.del(lockKey);
   }
 
@@ -122,7 +124,7 @@ class RoomManager {
       safeWs.isAlive = true;
     });
 
-    // 1. Check Local Memory
+    // 1. Check Local Memory (Fast Path)
     let room = this.activeRooms.get(roomId);
     if (room) {
       room.handleSocketConnect({ socket: safeWs, sessionId });
@@ -130,67 +132,98 @@ class RoomManager {
       return;
     }
 
-    const lockKey = `lock:room:${roomId}`;
-
-    // 2. Try to Acquire Lock
-    const lockAcquired = await redisClient.set(lockKey, POD_NAME, {
-      EX: LOCK_TIMEOUT_SEC,
-      NX: true,
-    });
-
-    // 3. Lock Failed Logic (Handover Trigger)
-    if (!lockAcquired) {
-      const currentOwner = await redisClient.get(lockKey);
-
-      if (currentOwner === POD_NAME) {
-        // I own the lock (likely recovering/restarting), proceed to load.
-      } else {
-        // Someone else owns it, BUT Nginx routed the user here.
-        // This means the Hash Ring changed (Scale Up/Down).
-        // I should be the new owner, so I request a handover.
-
-        await pubClient.publish(
-          "room-handover",
-          JSON.stringify({
-            roomId,
-            targetPodId: POD_NAME,
-          }),
-        );
-
-        // Tell client to retry in a moment (Client should have auto-reconnect logic)
-        safeWs.close(1013, "Migrating room to new pod... please retry.");
+    // 2. Check Pending Loads (Deduplication Fix)
+    // If another client is already loading this room, wait for their promise!
+    if (this.loadingRooms.has(roomId)) {
+      try {
+        room = await this.loadingRooms.get(roomId);
+        if (room) {
+          room.handleSocketConnect({ socket: safeWs, sessionId });
+          this.setupSocketCleanup(roomId, safeWs, room);
+        } else {
+          safeWs.close(1011, "Room load failed");
+        }
+        return;
+      } catch (err) {
+        console.error("Error waiting for room load:", err);
+        safeWs.close(1011, "Room load error");
         return;
       }
     }
 
-    // 4. Create Room (Standard Flow)
-    try {
-      room = await this.createRoom(roomId);
-      this.activeRooms.set(roomId, room);
+    // 3. Start Loading Process (Wrapped in a Promise)
+    const loadPromise = (async () => {
+      const lockKey = lock:room:${roomId};
+
+      // A. Try to Acquire Lock
+      const lockAcquired = await redisClient.set(lockKey, POD_NAME, {
+        EX: LOCK_TIMEOUT_SEC,
+        NX: true,
+      });
+
+      // B. Lock Failed Logic
+      if (!lockAcquired) {
+        const currentOwner = await redisClient.get(lockKey);
+
+        // If I don't own it, trigger Handover
+        if (currentOwner !== POD_NAME) {
+          await pubClient.publish(
+            "room-handover",
+            JSON.stringify({
+              roomId,
+              targetPodId: POD_NAME,
+            }),
+          );
+          // Throwing allows us to catch it below and close the socket
+          throw new Error("MIGRATION_NEEDED");
+        }
+      }
+
+      // C. Create Room (Only one execution per pod reaches here)
+      const newRoom = await this.createRoom(roomId);
+      this.activeRooms.set(roomId, newRoom);
       activeRoomsGauge.inc();
 
-      room.handleSocketConnect({ socket: safeWs, sessionId });
-
-      // Start Heartbeat to keep the lock alive
+      // Start Heartbeat
       const lockHeartbeat = setInterval(() => {
         redisClient.set(lockKey, POD_NAME, {
           EX: LOCK_TIMEOUT_SEC,
-          XX: true, // Only update if it exists
+          XX: true,
         });
       }, HEARTBEAT_INTERVAL_MS);
 
       this.roomHeartbeats.set(roomId, lockHeartbeat);
 
+      return newRoom;
+    })();
+
+    // 4. Store the promise so others can wait
+    this.loadingRooms.set(roomId, loadPromise);
+
+    try {
+      room = await loadPromise;
+
+      // Connect the socket (The FIRST user)
+      room.handleSocketConnect({ socket: safeWs, sessionId });
+
       this.setupSocketCleanup(roomId, safeWs, room, () => {
-        clearInterval(lockHeartbeat);
+        const heartbeat = this.roomHeartbeats.get(roomId);
+        if (heartbeat) clearInterval(heartbeat);
         this.roomHeartbeats.delete(roomId);
         this.activeRooms.delete(roomId);
-        redisClient.del(lockKey);
+        redisClient.del(lock:room:${roomId});
         activeRoomsGauge.dec();
       });
-    } catch (err) {
-      console.error(`[RoomManager] Failed to init room ${roomId}:`, err);
-      safeWs.close(1011, "Internal Error");
+    } catch (err: any) {
+      if (err.message === "MIGRATION_NEEDED") {
+        safeWs.close(1013, "Migrating room to new pod... please retry.");
+      } else {
+        console.error([RoomManager] Failed to init room ${roomId}:, err);
+        safeWs.close(1011, "Internal Error");
+      }
+    } finally {
+      // 5. Cleanup the pending promise
+      this.loadingRooms.delete(roomId);
     }
   }
 
@@ -206,13 +239,10 @@ class RoomManager {
       if (snapshot) {
         promises.push(persistRoomSnapshot(roomId, snapshot));
       }
-      // Release lock immediately
-      promises.push(redisClient.del(`lock:room:${roomId}`).then(() => {}));
+      promises.push(redisClient.del(lock:room:${roomId}).then(() => {}));
     }
 
     await Promise.allSettled(promises);
-
-    // Close all Redis connections
     await Promise.all([redisClient.quit(), subClient.quit(), pubClient.quit()]);
   }
 

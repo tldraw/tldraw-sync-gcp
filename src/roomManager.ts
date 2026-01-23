@@ -312,9 +312,10 @@ class RoomManager {
       safeWs.isAlive = true;
     });
 
-    // 1. Check Local Memory (Fast Path)
     let room = this.activeRooms.get(roomId);
     if (room) {
+      const currentSockets = this.roomSockets.get(roomId)?.size ?? 0;
+      console.log(`[Room] User ${sessionId} joining existing room ${roomId} (${currentSockets} users already connected)`);
       room.handleSocketConnect({ socket: safeWs, sessionId });
       this.setupSocketCleanup(roomId, safeWs, room);
       return;
@@ -379,7 +380,7 @@ class RoomManager {
     try {
       room = await loadPromise;
 
-      // Connect the socket
+      console.log(`[Room] User ${sessionId} created new room ${roomId}`);
       room.handleSocketConnect({ socket: safeWs, sessionId });
 
       this.setupSocketCleanup(roomId, safeWs, room, () => {
@@ -448,9 +449,10 @@ class RoomManager {
       this.roomSockets.get(roomId)?.delete(ws);
       room.handleSocketClose(ws.sessionId);
       setTimeout(() => {
-        const socketCount =
-          (room as any).sockets?.size ?? (room as any).allSockets?.size ?? 0;
+        const socketCount = this.roomSockets.get(roomId)?.size ?? 0;
+        console.log(`[Room] Socket closed for ${roomId}, remaining sockets: ${socketCount}`);
         if (socketCount === 0 && onEmpty) {
+          console.log(`[Room] No sockets remaining, cleaning up room ${roomId}`);
           onEmpty();
         }
       }, SOCKET_CLEANUP_DELAY_MS);

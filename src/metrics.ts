@@ -30,3 +30,28 @@ export const errorCounter = new client.Counter({
   labelNames: ["type"],
   registers: [register],
 });
+
+export const handoverRequestsCounter = new client.Counter({
+  name: "tldraw_handover_requests_total",
+  help: "Total handover requests initiated",
+  registers: [register],
+});
+
+export const handoverSuccessCounter = new client.Counter({
+  name: "tldraw_handover_success_total",
+  help: "Successful handovers completed",
+  registers: [register],
+});
+
+export const handoverTimeoutCounter = new client.Counter({
+  name: "tldraw_handover_timeouts_total",
+  help: "Handovers that timed out",
+  registers: [register],
+});
+
+export const handoverDurationHistogram = new client.Histogram({
+  name: "tldraw_handover_duration_seconds",
+  help: "Time taken for handover coordination",
+  buckets: [0.1, 0.5, 1, 2, 5],
+  registers: [register],
+});

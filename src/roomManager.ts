@@ -9,13 +9,18 @@ import { createClient } from "redis";
 import { fetchRoomSnapshot, persistRoomSnapshot } from "./gcsStorage.js";
 import throttle from "lodash.throttle";
 import { activeRoomsGauge } from "./metrics.js";
+import { randomUUID } from "crypto"; // NEW: Required for unique IDs
 
 // --- Constants ---
 const LOCK_TIMEOUT_SEC = 10;
 const THROTTLE_SAVE_MS = 10_000;
 const HEARTBEAT_INTERVAL_MS = (LOCK_TIMEOUT_SEC / 2) * 1000;
 const SOCKET_CLEANUP_DELAY_MS = 2000;
-const POD_NAME = process.env.POD_NAME || "unknown-pod";
+
+// --- FIX: Unique Identity Generation ---
+// Ensures every pod instance has a unique ID, preventing "Split Brain"
+const BASE_POD_NAME = "TldrawRoomManagerPod";
+const POD_NAME = `${BASE_POD_NAME}-${randomUUID().slice(0, 8)}`;
 
 // --- Interfaces ---
 interface TldrawWebSocket extends WebSocket {
@@ -63,7 +68,7 @@ class RoomManager {
   private activeRooms = new Map<string, TLSocketRoom<TLRecord, void>>();
   private roomHeartbeats = new Map<string, NodeJS.Timeout>();
 
-  // NEW: Cache to deduplicate concurrent loading requests
+  // Cache to deduplicate concurrent loading requests
   private loadingRooms = new Map<
     string,
     Promise<TLSocketRoom<TLRecord, void>>
@@ -78,6 +83,7 @@ class RoomManager {
     await subClient.subscribe("room-handover", async (message) => {
       try {
         const request: HandoverRequest = JSON.parse(message);
+        // Only release if WE actually have the room active in memory
         if (this.activeRooms.has(request.roomId)) {
           await this.releaseRoom(request.roomId);
         }
@@ -133,7 +139,6 @@ class RoomManager {
     }
 
     // 2. Check Pending Loads (Deduplication Fix)
-    // If another client is already loading this room, wait for their promise!
     if (this.loadingRooms.has(roomId)) {
       try {
         room = await this.loadingRooms.get(roomId);
@@ -165,7 +170,8 @@ class RoomManager {
       if (!lockAcquired) {
         const currentOwner = await redisClient.get(lockKey);
 
-        // If I don't own it, trigger Handover
+        // FIX: Ensure we only recover if WE are strictly the owner
+        // Since POD_NAME is now unique, this will correctly fail if another pod owns it.
         if (currentOwner !== POD_NAME) {
           await pubClient.publish(
             "room-handover",
@@ -174,9 +180,10 @@ class RoomManager {
               targetPodId: POD_NAME,
             }),
           );
-          // Throwing allows us to catch it below and close the socket
           throw new Error("MIGRATION_NEEDED");
+        } else {
         }
+      } else {
       }
 
       // C. Create Room (Only one execution per pod reaches here)
@@ -239,6 +246,7 @@ class RoomManager {
       if (snapshot) {
         promises.push(persistRoomSnapshot(roomId, snapshot));
       }
+      // Release lock immediately
       promises.push(redisClient.del(`lock:room:${roomId}`).then(() => {}));
     }
 

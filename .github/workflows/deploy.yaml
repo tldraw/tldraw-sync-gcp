@@ -56,11 +56,19 @@ jobs:
         gcloud components install gke-gcloud-auth-plugin
         gcloud container clusters get-credentials ${{ env.GKE_CLUSTER }} --region ${{ env.REGION }} --dns-endpoint
 
+    - name: Fix Service Account annotation
+      run: |
+        sed -i "s|<project-id>|${{ secrets.GCP_PROJECT_ID }}|g" kubernetes/service-account.yaml
+        kubectl apply -f kubernetes/service-account.yaml -n ${{ env.NAMESPACE }}
+
     - name: Update Kubernetes deployment image
       run: |
         kubectl set image deployment/${{ env.DEPLOYMENT_NAME }} \
           tldraw-sync=${{ env.GAR_LOCATION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ github.sha }} \
-          -n ${{ env.NAMESPACE }} 
+          -n ${{ env.NAMESPACE }}
+        
+        # Restart pods to pick up the fixed service account
+        kubectl rollout restart deployment/${{ env.DEPLOYMENT_NAME }} -n ${{ env.NAMESPACE }} 
 
     - name: Verify deployment rollout
       run: |

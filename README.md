@@ -16,6 +16,11 @@ This project implements a **Stateful Room Ownership model** to safely support re
   - Guarantees exclusive room ownership across pods.
   - Auto-renewed locks with safe expiration handling.
 
+- 🔄 **Two-Phase Coordinated Handover**
+  - Safe room migration during scaling events.
+  - Users disconnected only after new pod is ready.
+  - Zero data loss during pod transitions.
+
 - ☁️ **Google Cloud Storage Persistence**
   - Room snapshots and assets are persisted to GCS.
   - Ensures durability across pod restarts and deployments.
@@ -23,6 +28,7 @@ This project implements a **Stateful Room Ownership model** to safely support re
 - 🔌 **WebSocket-based Sync**
   - Powered by `@tldraw/sync-core`.
   - Low-latency real-time collaboration.
+  - Server-side keep-alive to prevent idle timeouts.
 
 - ♻️ **Graceful Shutdown**
   - Active rooms are force-saved on shutdown.
@@ -40,12 +46,16 @@ tldraw-client (Example App)
         |
         | WebSocket
         v
-GCP Load Balancer (Sticky Sessions)
+GCP Network Load Balancer
+        |
+        v
+NGINX Ingress Controller (Consistent Hashing by URI)
         |
         v
 GKE Pods (Node.js)
         |
         | Redis Lock (room ownership)
+        | Redis Pub/Sub (handover coordination)
         v
 Redis
         |
@@ -53,6 +63,8 @@ Redis
         v
 Google Cloud Storage
 ```
+
+**Key**: NGINX uses `upstream-hash-by: "$uri"` to route requests for the same room to the same pod. When pods scale, a coordinated handover protocol ensures safe room migration.
 
 ---
 
@@ -211,7 +223,7 @@ Typical CI/CD pipeline:
 4. Rolling update with zero downtime
 
 ⚠️ **Important:**  
-Ensure **Session Affinity (Sticky Sessions)** is enabled on your Load Balancer.
+Ensure NGINX Ingress is configured with `upstream-hash-by: "$uri"` for consistent room routing. See `kubernetes/ingress.yaml`.
 
 ---
 
@@ -221,8 +233,9 @@ Ensure **Session Affinity (Sticky Sessions)** is enabled on your Load Balancer.
 
 | Code | Meaning | Cause | Resolution |
 |----|-------|------|-----------|
-| **1013** | Try Again Later | Room lock owned by another pod | Client auto-retries. Enable sticky sessions |
+| **1013** | Try Again Later | Room migration in progress (two-phase handover) | Client auto-retries. Normal during scaling events. |
 | **1011** | Internal Error | Redis or GCS unreachable | Verify env variables |
+| **1005** | Idle Timeout | Connection idle too long | Server keep-alive should prevent this. Check PING_INTERVAL_MS. |
 | **503** | Unavailable | Pod shutting down or overloaded | Client will reconnect |
 
 ---
@@ -264,6 +277,24 @@ This ensures **zero data loss** during rolling deployments.
 
 GitHub:  
 https://github.com/tldraw/tldraw-sync-gcp
+
+---
+
+## 📊 Performance & Capacity
+
+Tested with k6 stress tests from within GCP:
+
+| Concurrent Users | Rooms × Users | Success Rate |
+|------------------|---------------|--------------|
+| 5,000 | 50 × 100 | **100%** |
+| 7,000 | 100 × 70 | **99.99%** |
+| 10,000 | 100 × 100 | ~30% (exceeded capacity) |
+
+**Tested infrastructure**: 5 NGINX Ingress replicas, 10 app pods, 3× e2-medium nodes
+
+**Connection latency**: ~235ms (normal load), ~10-20s (under heavy load)
+
+See `stress-test/README.md` for running your own benchmarks.
 
 ---
 

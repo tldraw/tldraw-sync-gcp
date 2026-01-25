@@ -2,6 +2,24 @@
 
 WebSocket load testing using k6 to simulate high-concurrency scenarios with automatic report generation.
 
+## Benchmark Results
+
+Tested from within GCP (Cloud Shell) against production infrastructure:
+
+| Configuration | VUs | Success Rate | Connection Latency |
+|---------------|-----|--------------|-------------------|
+| 5 NGINX + 10 pods | 5,000 | **100%** | 235ms (normal), ~8s (heavy) |
+| 5 NGINX + 10 pods | 7,000 | **99.99%** | 235ms (normal), ~16s (heavy) |
+| 5 NGINX + 10 pods | 10,000 | 30% | Exceeded capacity |
+
+**Infrastructure**: 5 NGINX Ingress replicas, 10 app pods, 3× e2-medium nodes
+
+**Key findings**:
+- ~7,000 concurrent connections is the sweet spot for this configuration
+- Connection latency is ~235ms under normal load
+- Run tests from within GCP (Cloud Shell/VM) for accurate results
+- Local machine network limits will skew results (we saw ~40% success locally vs 100% from GCP)
+
 ## Full Test with Scaling Events & Report
 
 Run the complete stress test with automatic pod scaling and HTML/JSON report:
@@ -101,6 +119,63 @@ docker run --rm -i \
   -e RAMP_UP=2m \
   /scripts/k6-stress-with-report.js
 ```
+
+## Running from GCP Cloud Shell (Recommended)
+
+For accurate results, run stress tests from within GCP's network. Cloud Shell has permission issues with volume mounts, so use stdin:
+
+```bash
+docker run --rm -i grafana/k6 run \
+  -e BASE_URL=wss://gcp-sync.tldraw.xyz \
+  -e ROOMS=100 \
+  -e USERS_PER_ROOM=70 - << 'EOF'
+import ws from 'k6/ws';
+import { check } from 'k6';
+import { Counter, Trend } from 'k6/metrics';
+
+const ROOMS = parseInt(__ENV.ROOMS) || 100;
+const USERS_PER_ROOM = parseInt(__ENV.USERS_PER_ROOM) || 70;
+const BASE_URL = __ENV.BASE_URL || 'wss://gcp-sync.tldraw.xyz';
+
+const wsConnectTime = new Trend('ws_connect_time', true);
+const wsFailed = new Counter('ws_failed');
+const wsSuccess = new Counter('ws_success');
+
+export const options = {
+  scenarios: {
+    stress: {
+      executor: 'ramping-vus',
+      startVUs: 0,
+      stages: [
+        { duration: '2m', target: ROOMS * USERS_PER_ROOM },
+        { duration: '3m', target: ROOMS * USERS_PER_ROOM },
+        { duration: '30s', target: 0 },
+      ],
+    },
+  },
+};
+
+export default function () {
+  const roomId = `room-${Math.floor(__VU / USERS_PER_ROOM) % ROOMS}`;
+  const url = `${BASE_URL}/api/connect/${roomId}?sessionId=stress-${__VU}-${__ITER}`;
+  
+  const start = Date.now();
+  const res = ws.connect(url, { tags: { name: 'ws' } }, (socket) => {
+    wsConnectTime.add(Date.now() - start);
+    wsSuccess.add(1);
+    
+    socket.on('message', () => {});
+    socket.setTimeout(() => socket.close(), 30000);
+  });
+  
+  if (!check(res, { 'connected': (r) => r && r.status === 101 })) {
+    wsFailed.add(1);
+  }
+}
+EOF
+```
+
+This tests 7,000 VUs (100 rooms × 70 users) from inside GCP's network.
 
 ## Quick Start
 

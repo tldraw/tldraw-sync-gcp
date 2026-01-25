@@ -180,6 +180,29 @@ const handoverSubClient = redisClient.duplicate(); // Dynamic per-room subscript
 
 The separation is necessary because Redis subscriptions put the connection into a special mode where only subscription commands are allowed.
 
+## WebSocket Keep-Alive
+
+To prevent GCP Load Balancer idle timeouts (default 30s) from killing WebSocket connections, the server implements server-side ping:
+
+```typescript
+const PING_INTERVAL_MS = 25000; // 25 seconds, under GCP's 30s timeout
+
+wss.on("connection", (ws) => {
+  const pingInterval = setInterval(() => {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.ping();
+    }
+  }, PING_INTERVAL_MS);
+  
+  ws.on("close", () => clearInterval(pingInterval));
+});
+```
+
+This is critical for handover reliability:
+- Long-running connections stay alive during normal operation
+- Users remain connected while waiting for handover to complete
+- Only code `1013` from the server (after ready signal) triggers reconnection
+
 ## Testing
 
 Run the handover integration test:

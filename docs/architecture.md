@@ -142,6 +142,27 @@ server.on("upgrade", (request, socket, head) => {
 });
 ```
 
+#### WebSocket Keep-Alive
+
+The server implements server-side ping to prevent GCP Load Balancer idle timeouts (default 30s):
+
+```typescript
+const PING_INTERVAL_MS = 25000; // 25 seconds
+
+wss.on("connection", (ws, request, roomId, sessionId) => {
+  const pingInterval = setInterval(() => {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.ping();
+    }
+  }, PING_INTERVAL_MS);
+  
+  ws.on("close", () => clearInterval(pingInterval));
+  ws.on("error", () => clearInterval(pingInterval));
+});
+```
+
+This ensures long-lived WebSocket connections remain active even during idle periods.
+
 #### Graceful Shutdown
 
 On `SIGTERM` or `SIGINT`:
@@ -158,10 +179,13 @@ The core component managing room lifecycle, distributed locking, and real-time s
 #### Constants
 
 ```typescript
-const LOCK_TIMEOUT_SEC = 10;        // Redis lock TTL
-const THROTTLE_SAVE_MS = 10_000;    // GCS save frequency
-const HEARTBEAT_INTERVAL_MS = 5000; // Lock renewal interval
-const SOCKET_CLEANUP_DELAY_MS = 2000; // Delay before room cleanup
+const LOCK_TIMEOUT_SEC = 10;           // Redis lock TTL
+const THROTTLE_SAVE_MS = 10_000;       // GCS save frequency
+const HEARTBEAT_INTERVAL_MS = 5000;    // Lock renewal interval
+const SOCKET_CLEANUP_DELAY_MS = 2000;  // Delay before room cleanup
+const HANDOVER_TIMEOUT_MS = 5000;      // Wait for lock release during handover
+const HANDOVER_READY_TIMEOUT_MS = 10000; // Wait for new owner ready signal
+const PING_INTERVAL_MS = 25000;        // WebSocket keep-alive ping interval
 ```
 
 #### Pod Identity
@@ -176,15 +200,18 @@ This ensures correct lock ownership identification across pod restarts.
 
 #### Redis Client Architecture
 
-Three separate Redis connections are used:
+Four separate Redis connections are used:
 
 ```typescript
 const redisClient = createClient({ url: REDIS_URL }); // Commands (SET, GET, DEL)
-const subClient = redisClient.duplicate();             // Pub/Sub subscriptions
+const subClient = redisClient.duplicate();             // room-handover subscription
 const pubClient = redisClient.duplicate();             // Pub/Sub publishing
+const handoverSubClient = redisClient.duplicate();     // Dynamic per-room subscriptions
 ```
 
-This separation is required because Redis Pub/Sub puts the connection into a blocking subscriber mode.
+This separation is required because:
+1. Redis Pub/Sub puts the connection into a blocking subscriber mode
+2. The `handoverSubClient` handles dynamic subscriptions for `handover-lock-released:{roomId}` and `handover-ready:{roomId}` channels without blocking the main subscription client
 
 #### Room Acquisition Flow
 
@@ -236,24 +263,32 @@ const lockHeartbeat = setInterval(() => {
 
 The `XX` flag ensures we only update if the key exists (we still own it).
 
-#### Room Handover Mechanism
+#### Two-Phase Room Handover Mechanism
 
-When a pod receives a connection for a room owned by another pod:
+When a pod receives a connection for a room owned by another pod, a coordinated two-phase handover ensures users are only disconnected after the new owner is ready:
 
-1. The new pod publishes a handover request via Redis Pub/Sub
-2. The owning pod receives the message and calls `releaseRoom()`
-3. `releaseRoom()` saves snapshot to GCS, clears heartbeat, deletes lock
-4. The new pod's client receives `1013` and retries
+**Phase 1: Lock Transfer**
+1. New pod (Pod C) fails to acquire lock via `SETNX`
+2. Pod C subscribes to `handover-lock-released:{roomId}` channel
+3. Pod C publishes handover request to `room-handover` channel
+4. Owning pod (Pod A) saves state to GCS, releases lock
+5. Pod A publishes to `handover-lock-released:{roomId}`
 
-```typescript
-// Handover listener
-await subClient.subscribe("room-handover", async (message) => {
-  const request = JSON.parse(message);
-  if (this.activeRooms.has(request.roomId)) {
-    await this.releaseRoom(request.roomId);
-  }
-});
-```
+**Phase 2: Ready Confirmation**
+6. Pod C acquires lock after receiving lock-released signal
+7. Pod C loads room state from GCS
+8. Pod C publishes to `handover-ready:{roomId}`
+9. Pod A receives ready signal, NOW closes WebSocket connections (code 1013)
+10. Users automatically reconnect to Pod C (which is ready)
+
+**Redis Channels:**
+| Channel | Direction | Purpose |
+|---------|-----------|---------|
+| `room-handover` | Pod C → Pod A | Request room release |
+| `handover-lock-released:{roomId}` | Pod A → Pod C | Lock is free, acquire now |
+| `handover-ready:{roomId}` | Pod C → Pod A | Ready to serve, close your sockets |
+
+See `docs/coordinated-handover.md` for detailed protocol documentation.
 
 ---
 
@@ -509,6 +544,47 @@ annotations:
 3. Later references: GET /api/uploads/my-image.png
    - Streams from GCS with caching headers
 ```
+
+---
+
+## Performance & Capacity
+
+Based on stress testing with k6 from within GCP:
+
+### Tested Configuration
+
+| Component | Configuration |
+|-----------|---------------|
+| NGINX Ingress | 5 replicas |
+| App Pods | 10 replicas |
+| Nodes | 3× e2-medium |
+
+### Capacity Results
+
+| VUs | Rooms × Users | Success Rate | Connection Latency (p95) |
+|-----|---------------|--------------|--------------------------|
+| 5,000 | 50 × 100 | **100%** | ~8s under load |
+| 7,000 | 100 × 70 | **99.99%** | ~16s under load |
+| 10,000 | 100 × 100 | 30% | Exceeded capacity |
+
+### Connection Latency
+
+| Scenario | Latency |
+|----------|---------|
+| Normal load | **~235ms** |
+| Heavy load (7000 VUs) | ~10-20s |
+
+### Recommended Capacity
+
+For the tested infrastructure (5 NGINX + 10 pods + 3 nodes):
+- **Safe capacity**: ~7,000 concurrent WebSocket connections
+- **Rooms supported**: 100+
+- **Users per room**: Up to 70 reliably
+
+To scale beyond 7,000 connections:
+1. Increase NGINX Ingress replicas
+2. Use larger node types (e2-standard-4 or higher)
+3. Increase `worker-connections` in NGINX ConfigMap
 
 ---
 

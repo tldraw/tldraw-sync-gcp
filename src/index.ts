@@ -79,6 +79,8 @@ server.on("upgrade", (request: IncomingMessage, socket, head) => {
   }
 });
 
+const PING_INTERVAL_MS = 25000;
+
 wss.on(
   "connection",
   (
@@ -89,8 +91,19 @@ wss.on(
   ) => {
     activeConnectionsGauge.inc();
 
+    const pingInterval = setInterval(() => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.ping();
+      }
+    }, PING_INTERVAL_MS);
+
     ws.on("close", () => {
+      clearInterval(pingInterval);
       activeConnectionsGauge.dec();
+    });
+
+    ws.on("error", () => {
+      clearInterval(pingInterval);
     });
 
     try {

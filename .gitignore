@@ -28,3 +28,6 @@ override.tf.json
 *.tfvars
 !*.auto.tfvars
 .yarn
+
+# Stress test reports (generated artifacts)
+stress-test/reports/

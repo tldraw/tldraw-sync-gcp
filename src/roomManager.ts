@@ -22,8 +22,12 @@ const LOCK_TIMEOUT_SEC = 10;
 const THROTTLE_SAVE_MS = 10_000;
 const HEARTBEAT_INTERVAL_MS = (LOCK_TIMEOUT_SEC / 2) * 1000;
 const SOCKET_CLEANUP_DELAY_MS = 2000;
-const HANDOVER_TIMEOUT_MS = 5000; // Max time to wait for handover completion
-const HANDOVER_CHANNEL_PREFIX = "handover-complete:";
+const HANDOVER_TIMEOUT_MS = 5000;
+const HANDOVER_READY_TIMEOUT_MS = 10000;
+
+const CHANNEL_HANDOVER_REQUEST = "room-handover";
+const CHANNEL_LOCK_RELEASED_PREFIX = "handover-lock-released:";
+const CHANNEL_READY_PREFIX = "handover-ready:";
 
 // --- Unique Pod Identity ---
 // Ensures every pod instance has a unique ID, preventing "Split Brain"
@@ -121,11 +125,12 @@ class RoomManager {
     if (!room) return;
 
     const lockKey = `lock:room:${roomId}`;
-    const completionChannel = `${HANDOVER_CHANNEL_PREFIX}${roomId}`;
+    const lockReleasedChannel = `${CHANNEL_LOCK_RELEASED_PREFIX}${roomId}`;
+    const readyChannel = `${CHANNEL_READY_PREFIX}${roomId}`;
     const sockets = this.roomSockets.get(roomId);
     const socketCount = sockets?.size || 0;
 
-    console.log(`[Handover] Releasing room ${roomId} with ${socketCount} connected users`);
+    console.log(`[Handover] Phase 1: Releasing room ${roomId} with ${socketCount} connected users`);
 
     try {
       const snapshot = room.getCurrentSnapshot();
@@ -143,15 +148,24 @@ class RoomManager {
       await redisClient.del(lockKey);
       console.log(`[Handover] Released lock for room ${roomId}`);
 
-      await pubClient.publish(completionChannel, JSON.stringify({
+      const readyWaiter = this.waitForReadySignal(readyChannel);
+
+      await pubClient.publish(lockReleasedChannel, JSON.stringify({
         roomId,
         previousOwner: POD_NAME,
         timestamp: Date.now(),
       }));
-      console.log(`[Handover] Published completion for room ${roomId}`);
+      console.log(`[Handover] Phase 2: Published lock-released, waiting for new owner ready signal...`);
+
+      const isReady = await readyWaiter;
+
+      if (isReady) {
+        console.log(`[Handover] New owner ready for room ${roomId}, closing ${socketCount} connections`);
+      } else {
+        console.log(`[Handover] Timeout waiting for ready signal for room ${roomId}, closing connections anyway`);
+      }
 
       if (sockets && sockets.size > 0) {
-        console.log(`[Handover] Closing ${sockets.size} WebSocket connections for room ${roomId}`);
         for (const ws of sockets) {
           try {
             ws.close(1013, "Room migrated to another server, please reconnect");
@@ -164,19 +178,57 @@ class RoomManager {
       
     } catch (err) {
       console.error(`[Handover] Error releasing room ${roomId}:`, err);
-      await pubClient.publish(completionChannel, JSON.stringify({
-        roomId,
-        previousOwner: POD_NAME,
-        error: true,
-        timestamp: Date.now(),
-      })).catch(() => {});
+      this.forceCloseSockets(roomId);
     }
   }
 
-  private async subscribeToHandoverCompletion(
+  private waitForReadySignal(channel: string): Promise<boolean> {
+    return new Promise((resolve) => {
+      let resolved = false;
+      let timeoutId: NodeJS.Timeout;
+
+      const messageHandler = () => {
+        if (!resolved) {
+          resolved = true;
+          clearTimeout(timeoutId);
+          handoverSubClient.unsubscribe(channel).catch(() => {});
+          resolve(true);
+        }
+      };
+
+      handoverSubClient.subscribe(channel, messageHandler).then(() => {
+        timeoutId = setTimeout(() => {
+          if (!resolved) {
+            resolved = true;
+            handoverSubClient.unsubscribe(channel).catch(() => {});
+            resolve(false);
+          }
+        }, HANDOVER_READY_TIMEOUT_MS);
+      }).catch(() => {
+        resolve(false);
+      });
+    });
+  }
+
+  private forceCloseSockets(roomId: string) {
+    const sockets = this.roomSockets.get(roomId);
+    if (sockets && sockets.size > 0) {
+      console.log(`[Handover] Force closing ${sockets.size} sockets for room ${roomId}`);
+      for (const ws of sockets) {
+        try {
+          ws.close(1013, "Room migrated to another server, please reconnect");
+        } catch (e) {
+          // Socket may already be closed
+        }
+      }
+      this.roomSockets.delete(roomId);
+    }
+  }
+
+  private async subscribeToLockReleased(
     roomId: string
   ): Promise<{ wait: () => Promise<boolean>; cleanup: () => void }> {
-    const channel = `${HANDOVER_CHANNEL_PREFIX}${roomId}`;
+    const channel = `${CHANNEL_LOCK_RELEASED_PREFIX}${roomId}`;
     let resolved = false;
     let resolvePromise: (value: boolean) => void;
     let timeoutId: NodeJS.Timeout;
@@ -185,12 +237,11 @@ class RoomManager {
       resolvePromise = resolve;
     });
 
-    const messageHandler = (message: string) => {
+    const messageHandler = () => {
       if (!resolved) {
         resolved = true;
         clearTimeout(timeoutId);
-        console.log(`[Handover] Received completion for room ${roomId}`);
-        handoverSuccessCounter.inc();
+        console.log(`[Handover] Received lock-released for room ${roomId}`);
         resolvePromise(true);
       }
     };
@@ -209,7 +260,7 @@ class RoomManager {
       timeoutId = setTimeout(() => {
         if (!resolved) {
           resolved = true;
-          console.log(`[Handover] Timeout waiting for room ${roomId}`);
+          console.log(`[Handover] Timeout waiting for lock-released for room ${roomId}`);
           handoverTimeoutCounter.inc();
           handoverSubClient.unsubscribe(channel).catch(() => {});
           resolvePromise(false);
@@ -222,13 +273,10 @@ class RoomManager {
     return { wait, cleanup };
   }
 
-  // --- Acquire Lock with Coordinated Handover ---
-  // Tries to acquire lock, if held by another pod, coordinates handover
-  private async acquireLockWithHandover(roomId: string): Promise<boolean> {
+  private async acquireLockWithHandover(roomId: string): Promise<{ acquired: boolean; shouldSignalReady: boolean }> {
     const lockKey = `lock:room:${roomId}`;
     const startTime = Date.now();
 
-    // 1. Try direct acquisition
     const lockAcquired = await redisClient.set(lockKey, POD_NAME, {
       EX: LOCK_TIMEOUT_SEC,
       NX: true,
@@ -236,19 +284,16 @@ class RoomManager {
 
     if (lockAcquired) {
       console.log(`[Lock] Acquired lock for room ${roomId} (direct)`);
-      return true;
+      return { acquired: true, shouldSignalReady: false };
     }
 
-    // 2. Lock held by another pod - check who owns it
     const currentOwner = await redisClient.get(lockKey);
     
-    // Edge case: we already own it (shouldn't happen, but handle gracefully)
     if (currentOwner === POD_NAME) {
       console.log(`[Lock] We already own lock for room ${roomId}`);
-      return true;
+      return { acquired: true, shouldSignalReady: false };
     }
 
-    // Edge case: lock expired between SETNX and GET
     if (!currentOwner) {
       const retryAcquired = await redisClient.set(lockKey, POD_NAME, {
         EX: LOCK_TIMEOUT_SEC,
@@ -256,33 +301,30 @@ class RoomManager {
       });
       if (retryAcquired) {
         console.log(`[Lock] Acquired lock for room ${roomId} (after expiry)`);
-        return true;
+        return { acquired: true, shouldSignalReady: false };
       }
     }
 
-    console.log(`[Lock] Room ${roomId} owned by ${currentOwner}, initiating handover...`);
+    console.log(`[Lock] Room ${roomId} owned by ${currentOwner}, initiating two-phase handover...`);
     handoverRequestsCounter.inc();
 
-    const subscription = await this.subscribeToHandoverCompletion(roomId);
+    const subscription = await this.subscribeToLockReleased(roomId);
 
-    await pubClient.publish("room-handover", JSON.stringify({
+    await pubClient.publish(CHANNEL_HANDOVER_REQUEST, JSON.stringify({
       roomId,
       targetPodId: POD_NAME,
     }));
 
-    const handoverCompleted = await subscription.wait();
+    const lockReleased = await subscription.wait();
     const duration = (Date.now() - startTime) / 1000;
     handoverDurationHistogram.observe(duration);
 
-    if (handoverCompleted) {
-      console.log(`[Lock] Handover completed for room ${roomId} in ${duration.toFixed(2)}s`);
+    if (lockReleased) {
+      console.log(`[Lock] Lock released signal received for room ${roomId} in ${duration.toFixed(2)}s`);
     } else {
-      console.log(`[Lock] Handover timeout for room ${roomId}, attempting acquisition anyway...`);
+      console.log(`[Lock] Timeout waiting for lock release for room ${roomId}, attempting acquisition anyway...`);
     }
 
-    // 6. Try to acquire lock again
-    // Whether handover succeeded or timed out, we try to acquire
-    // If timeout, the original owner may have crashed and lock may have expired
     const retryAcquired = await redisClient.set(lockKey, POD_NAME, {
       EX: LOCK_TIMEOUT_SEC,
       NX: true,
@@ -290,12 +332,22 @@ class RoomManager {
 
     if (retryAcquired) {
       console.log(`[Lock] Acquired lock for room ${roomId} after handover`);
-      return true;
+      handoverSuccessCounter.inc();
+      return { acquired: true, shouldSignalReady: true };
     }
 
-    // 7. Still couldn't acquire - another pod beat us to it
     console.log(`[Lock] Failed to acquire lock for room ${roomId} after handover`);
-    return false;
+    return { acquired: false, shouldSignalReady: false };
+  }
+
+  private async signalReady(roomId: string) {
+    const readyChannel = `${CHANNEL_READY_PREFIX}${roomId}`;
+    await pubClient.publish(readyChannel, JSON.stringify({
+      roomId,
+      newOwner: POD_NAME,
+      timestamp: Date.now(),
+    }));
+    console.log(`[Handover] Published ready signal for room ${roomId}`);
   }
 
   public async getOrCreateRoom(
@@ -343,33 +395,31 @@ class RoomManager {
       }
     }
 
-    // 3. Start Loading Process (Wrapped in a Promise)
     const loadPromise = (async () => {
       const lockKey = `lock:room:${roomId}`;
 
-      // A. Try to Acquire Lock (with coordinated handover if needed)
-      const lockAcquired = await this.acquireLockWithHandover(roomId);
+      const { acquired, shouldSignalReady } = await this.acquireLockWithHandover(roomId);
 
-      if (!lockAcquired) {
-        // Even after handover attempt, we couldn't get the lock
-        // Another pod beat us - client should retry
+      if (!acquired) {
         throw new Error("LOCK_ACQUISITION_FAILED");
       }
 
-      // B. Create Room
       const newRoom = await this.createRoom(roomId);
       this.activeRooms.set(roomId, newRoom);
       activeRoomsGauge.inc();
 
-      // C. Start Heartbeat to maintain lock
       const lockHeartbeat = setInterval(() => {
         redisClient.set(lockKey, POD_NAME, {
           EX: LOCK_TIMEOUT_SEC,
-          XX: true, // Only update if exists (we still own it)
+          XX: true,
         });
       }, HEARTBEAT_INTERVAL_MS);
 
       this.roomHeartbeats.set(roomId, lockHeartbeat);
+
+      if (shouldSignalReady) {
+        await this.signalReady(roomId);
+      }
 
       return newRoom;
     })();

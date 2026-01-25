@@ -118,7 +118,7 @@ export default function () {
   function connect() {
     connectStart = Date.now();
     
-    const res = ws.connect(url, {}, function (socket) {
+    const res = ws.connect(url, { tags: { name: 'WebSocketConnection' } }, function (socket) {
       const connectTime = Date.now() - connectStart;
       wsConnectTime.add(connectTime);
       wsConnectionsSuccess.add(1);

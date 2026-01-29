@@ -176,27 +176,27 @@ This client is intended for **testing, debugging, and reference** — not produc
 Example React integration using `@tldraw/sync`.
 
 ```tsx
-import { useSync } from "@tldraw/sync";
-import { Tldraw } from "tldraw";
+import { useSync } from "@tldraw/sync"
+import { Tldraw } from "tldraw"
 
-const roomId = "room-123";
+const roomId = "room-123"
 
 const WORKER_URL = import.meta.env.PROD
   ? "https://your-gcp-loadbalancer.com"
-  : "http://localhost:3001";
+  : "http://localhost:3001"
 
 export function CollaborationRoom() {
-  const wsUri = `${WORKER_URL.replace("http", "ws")}/api/connect/${roomId}`;
+  const wsUri = `${WORKER_URL.replace("http", "ws")}/api/connect/${roomId}`
 
   const store = useSync({
     uri: wsUri,
-  });
+  })
 
   return (
     <div style={{ position: "fixed", inset: 0 }}>
       <Tldraw store={store} />
     </div>
-  );
+  )
 }
 ```
 
@@ -231,12 +231,12 @@ Ensure NGINX Ingress is configured with `upstream-hash-by: "$uri"` for consisten
 
 ### Common Errors
 
-| Code | Meaning | Cause | Resolution |
-|----|-------|------|-----------|
-| **1013** | Try Again Later | Room migration in progress (two-phase handover) | Client auto-retries. Normal during scaling events. |
-| **1011** | Internal Error | Redis or GCS unreachable | Verify env variables |
-| **1005** | Idle Timeout | Connection idle too long | Server keep-alive should prevent this. Check PING_INTERVAL_MS. |
-| **503** | Unavailable | Pod shutting down or overloaded | Client will reconnect |
+| Code     | Meaning         | Cause                                           | Resolution                                                     |
+| -------- | --------------- | ----------------------------------------------- | -------------------------------------------------------------- |
+| **1013** | Try Again Later | Room migration in progress (two-phase handover) | Client auto-retries. Normal during scaling events.             |
+| **1011** | Internal Error  | Redis or GCS unreachable                        | Verify env variables                                           |
+| **1005** | Idle Timeout    | Connection idle too long                        | Server keep-alive should prevent this. Check PING_INTERVAL_MS. |
+| **503**  | Unavailable     | Pod shutting down or overloaded                 | Client will reconnect                                          |
 
 ---
 
@@ -284,11 +284,11 @@ https://github.com/tldraw/tldraw-sync-gcp
 
 Tested with k6 stress tests from within GCP:
 
-| Concurrent Users | Rooms × Users | Success Rate |
-|------------------|---------------|--------------|
-| 5,000 | 50 × 100 | **100%** |
-| 7,000 | 100 × 70 | **99.99%** |
-| 10,000 | 100 × 100 | ~30% (exceeded capacity) |
+| Concurrent Users | Rooms × Users | Success Rate             |
+| ---------------- | ------------- | ------------------------ |
+| 5,000            | 50 × 100      | **100%**                 |
+| 7,000            | 100 × 70      | **99.99%**               |
+| 10,000           | 100 × 100     | ~30% (exceeded capacity) |
 
 **Tested infrastructure**: 5 NGINX Ingress replicas, 10 app pods, 3× e2-medium nodes
 

@@ -1,0 +1,33 @@
+# Dependencies
+node_modules/
+.yarn/
+
+# Build outputs
+dist/
+build/
+
+# Lock files
+yarn.lock
+package-lock.json
+
+# Generated files
+*.min.js
+*.min.css
+
+# Terraform
+.terraform/
+*.terraform.lock.hcl
+
+# Binary/media files
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.svg
+*.ico
+*.pdf
+
+# Misc
+.git/
+coverage/
+.DS_Store

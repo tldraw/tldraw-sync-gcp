@@ -7,7 +7,6 @@ spec:
     matchLabels:
       app: tldraw-sync
   endpoints:
-  - port: 3001
-    interval: 30s
-    path: /metrics
-    
+    - port: 3001
+      interval: 30s
+      path: /metrics

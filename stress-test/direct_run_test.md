@@ -2,10 +2,10 @@ docker run --rm -i grafana/k6 run -e BASE_URL=wss://gcp-sync.tldraw.xyz -e ROOMS
 import ws from 'k6/ws';
 import { check } from 'k6';
 import { Counter, Trend, Rate } from 'k6/metrics';
-const ROOMS = parseInt(__ENV.ROOMS) || 100;
-const USERS_PER_ROOM = parseInt(__ENV.USERS_PER_ROOM) || 70;
-const BASE_URL = __ENV.BASE_URL || 'wss://gcp-sync.tldraw.xyz';
-const DRAW_INTERVAL_MS = parseInt(__ENV.DRAW_INTERVAL) || 2000;
+const ROOMS = parseInt(**ENV.ROOMS) || 100;
+const USERS_PER_ROOM = parseInt(**ENV.USERS_PER_ROOM) || 70;
+const BASE_URL = **ENV.BASE_URL || 'wss://gcp-sync.tldraw.xyz';
+const DRAW_INTERVAL_MS = parseInt(**ENV.DRAW_INTERVAL) || 2000;
 // Connection metrics
 const wsConnectTime = new Trend('ws_connect_time', true);
 const wsFailed = new Counter('ws_failed');
@@ -19,69 +19,69 @@ const wsMessagesSent = new Counter('ws_messages_sent');
 // Drawing simulation metrics
 const drawLatency = new Trend('draw_broadcast_latency', true);
 export const options = {
-  scenarios: {
-    stress: {
-      executor: 'ramping-vus',
-      startVUs: 0,
-      stages: [
-        { duration: '2m', target: ROOMS * USERS_PER_ROOM },
-        { duration: '3m', target: ROOMS * USERS_PER_ROOM },
-        { duration: '30s', target: 0 },
-      ],
-    },
-  },
-  summaryTrendStats: ['avg', 'min', 'med', 'max', 'p(90)', 'p(95)', 'p(99)'],
+scenarios: {
+stress: {
+executor: 'ramping-vus',
+startVUs: 0,
+stages: [
+{ duration: '2m', target: ROOMS * USERS_PER_ROOM },
+{ duration: '3m', target: ROOMS * USERS_PER_ROOM },
+{ duration: '30s', target: 0 },
+],
+},
+},
+summaryTrendStats: ['avg', 'min', 'med', 'max', 'p(90)', 'p(95)', 'p(99)'],
 };
 // Generate a tldraw-like shape update message
 function generateDrawMessage(shapeId, x, y) {
-  return JSON.stringify({
-    type: 'push',
-    clientClock: Date.now(),
-    diff: {
-      [`shape:${shapeId}`]: {
-        id: `shape:${shapeId}`,
-        type: 'draw',
-        x: x,
-        y: y,
-        props: {
-          segments: [{ type: 'free', points: [{ x: 0, y: 0 }, { x: 10, y: 10 }] }],
-          color: 'black',
-          size: 'm',
-        },
-      },
-    },
-  });
+return JSON.stringify({
+type: 'push',
+clientClock: Date.now(),
+diff: {
+[`shape:${shapeId}`]: {
+id: `shape:${shapeId}`,
+type: 'draw',
+x: x,
+y: y,
+props: {
+segments: [{ type: 'free', points: [{ x: 0, y: 0 }, { x: 10, y: 10 }] }],
+color: 'black',
+size: 'm',
+},
+},
+},
+});
 }
 export default function () {
-  const vuId = __VU;
-  const roomIndex = Math.floor(vuId / USERS_PER_ROOM) % ROOMS;
-  const userIndexInRoom = vuId % USERS_PER_ROOM;
-  const roomId = `room-${roomIndex}`;
-  const sessionId = `stress-${vuId}-${__ITER}`;
+const vuId = **VU;
+const roomIndex = Math.floor(vuId / USERS_PER_ROOM) % ROOMS;
+const userIndexInRoom = vuId % USERS_PER_ROOM;
+const roomId = `room-${roomIndex}`;
+const sessionId = `stress-${vuId}-${**ITER}`;
   const url = `${BASE_URL}/api/connect/${roomId}?sessionId=${sessionId}`;
-  
-  // First 5 users in each room are "drawers" who send updates
-  const isDrawer = userIndexInRoom < 5;
-  
-  const connectStart = Date.now();
-  let connectionEstablished = 0;
-  let firstMessage = true;
-  let lastMsgTime = 0;
-  let msgCount = 0;
-  
-  const res = ws.connect(url, { tags: { name: 'ws' } }, (socket) => {
-    const connectTime = Date.now() - connectStart;
-    connectionEstablished = Date.now();
-    wsConnectTime.add(connectTime);
-    wsSuccess.add(1);
-    wsSuccessRate.add(1);
-    lastMsgTime = Date.now();
-    
+
+// First 5 users in each room are "drawers" who send updates
+const isDrawer = userIndexInRoom < 5;
+
+const connectStart = Date.now();
+let connectionEstablished = 0;
+let firstMessage = true;
+let lastMsgTime = 0;
+let msgCount = 0;
+
+const res = ws.connect(url, { tags: { name: 'ws' } }, (socket) => {
+const connectTime = Date.now() - connectStart;
+connectionEstablished = Date.now();
+wsConnectTime.add(connectTime);
+wsSuccess.add(1);
+wsSuccessRate.add(1);
+lastMsgTime = Date.now();
+
     socket.on('message', (data) => {
       const now = Date.now();
       msgCount++;
       wsMessagesReceived.add(1);
-      
+
       if (firstMessage) {
         // Time from connection established to first server message
         wsFirstMsgLatency.add(now - connectionEstablished);
@@ -90,7 +90,7 @@ export default function () {
         // Time between consecutive messages (sync broadcast latency)
         const interMsgTime = now - lastMsgTime;
         wsInterMsgLatency.add(interMsgTime);
-        
+
         // If we receive messages frequently, it indicates active sync
         if (interMsgTime < 5000) {
           drawLatency.add(interMsgTime);
@@ -98,7 +98,7 @@ export default function () {
       }
       lastMsgTime = now;
     });
-    
+
     // Drawers send periodic updates to simulate drawing
     if (isDrawer) {
       let drawCount = 0;
@@ -112,26 +112,26 @@ export default function () {
         }
       }, DRAW_INTERVAL_MS);
     }
-    
+
     socket.setTimeout(() => socket.close(), 30000);
-  });
-  
-  const connected = check(res, { 'connected': (r) => r && r.status === 101 });
-  if (!connected) {
-    wsFailed.add(1);
-    wsSuccessRate.add(0);
-  }
+
+});
+
+const connected = check(res, { 'connected': (r) => r && r.status === 101 });
+if (!connected) {
+wsFailed.add(1);
+wsSuccessRate.add(0);
+}
 }
 export function handleSummary(data) {
-  const m = data.metrics;
-  const get = (name, stat) => {
-    if (!m[name] || !m[name].values) return 'N/A';
-    const v = m[name].values[stat];
-    return typeof v === 'number' ? v.toFixed(2) : 'N/A';
-  };
-  
-  const summary = `
-╔════════════════════════════════════════════════════════════════════════════╗
+const m = data.metrics;
+const get = (name, stat) => {
+if (!m[name] || !m[name].values) return 'N/A';
+const v = m[name].values[stat];
+return typeof v === 'number' ? v.toFixed(2) : 'N/A';
+};
+
+const summary = `╔════════════════════════════════════════════════════════════════════════════╗
 ║                    TLDRAW SYNC STRESS TEST - FULL RESULTS                  ║
 ╠════════════════════════════════════════════════════════════════════════════╣
 ║  CONFIGURATION                                                             ║
@@ -164,11 +164,10 @@ export function handleSummary(data) {
 ║  THROUGHPUT                                                                ║
 ║    Messages Sent:       ${get('ws_messages_sent', 'count').padEnd(52)}║
 ║    Messages Received:   ${get('ws_messages_received', 'count').padEnd(52)}║
-╚════════════════════════════════════════════════════════════════════════════╝
-`;
-  
-  return {
-    stdout: summary,
-  };
+╚════════════════════════════════════════════════════════════════════════════╝`;
+
+return {
+stdout: summary,
+};
 }
 EOF

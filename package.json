@@ -8,7 +8,9 @@
   "scripts": {
     "dev": "tsx watch --clear-screen=false --env-file=.env src/index.ts",
     "build": "tsc",
-    "start": "node -r dotenv/config dist/index.js"
+    "start": "node -r dotenv/config dist/index.js",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
   },
   "dependencies": {
     "@google-cloud/storage": "^7.17.3",
@@ -29,6 +31,7 @@
     "@types/lodash.throttle": "^4.1.9",
     "@types/node": "^20.12.12",
     "@types/ws": "^8.5.10",
+    "prettier": "^3.5.3",
     "tsx": "^4.20.6",
     "typescript": "^5.4.5"
   },

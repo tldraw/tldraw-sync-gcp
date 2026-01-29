@@ -1,492 +1,510 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>tldraw-sync-gcp Architecture Presentation</title>
-  <style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
-    
-    :root {
-      --primary: #4285F4;
-      --secondary: #34A853;
-      --accent: #FBBC04;
-      --danger: #EA4335;
-      --dark: #202124;
-      --gray: #5F6368;
-      --light: #F8F9FA;
-      --border: #DADCE0;
-    }
-    
-    * {
-      margin: 0;
-      padding: 0;
-      box-sizing: border-box;
-    }
-    
-    body {
-      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-      color: var(--dark);
-      line-height: 1.6;
-      background: white;
-    }
-    
-    .page {
-      width: 100%;
-      max-width: 1000px;
-      margin: 0 auto;
-      padding: 60px 80px;
-      page-break-after: always;
-      min-height: 100vh;
-      position: relative;
-    }
-    
-    .page:last-child {
-      page-break-after: avoid;
-    }
-    
-    /* Cover Page */
-    .cover {
-      display: flex;
-      flex-direction: column;
-      justify-content: center;
-      align-items: center;
-      text-align: center;
-      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-      color: white;
-    }
-    
-    .cover h1 {
-      font-size: 3.5rem;
-      font-weight: 700;
-      margin-bottom: 20px;
-      letter-spacing: -1px;
-    }
-    
-    .cover .subtitle {
-      font-size: 1.5rem;
-      font-weight: 400;
-      color: #ffffff;
-      margin-bottom: 60px;
-      text-shadow: 0 2px 4px rgba(0,0,0,0.2);
-    }
-    
-    .cover .meta {
-      font-size: 1.1rem;
-      color: #ffffff;
-      font-weight: 500;
-      text-shadow: 0 2px 4px rgba(0,0,0,0.2);
-    }
-    
-    .cover .logo-row {
-      display: flex;
-      gap: 40px;
-      align-items: center;
-      margin-top: 80px;
-    }
-    
-    .cover .logo-row span {
-      font-size: 2rem;
-      font-weight: 600;
-    }
-    
-    /* Section Headers */
-    h2 {
-      font-size: 2rem;
-      font-weight: 600;
-      color: var(--primary);
-      margin-bottom: 30px;
-      padding-bottom: 15px;
-      border-bottom: 3px solid var(--primary);
-    }
-    
-    h3 {
-      font-size: 1.4rem;
-      font-weight: 600;
-      color: var(--dark);
-      margin: 30px 0 15px 0;
-    }
-    
-    h4 {
-      font-size: 1.1rem;
-      font-weight: 600;
-      color: var(--gray);
-      margin: 20px 0 10px 0;
-    }
-    
-    p {
-      margin-bottom: 15px;
-      color: var(--gray);
-    }
-    
-    /* Cards */
-    .card-grid {
-      display: grid;
-      grid-template-columns: repeat(2, 1fr);
-      gap: 20px;
-      margin: 30px 0;
-    }
-    
-    .card-grid.three-col {
-      grid-template-columns: repeat(3, 1fr);
-    }
-    
-    .card {
-      background: var(--light);
-      border-radius: 12px;
-      padding: 25px;
-      border: 1px solid var(--border);
-    }
-    
-    .card.highlight {
-      background: linear-gradient(135deg, #E8F0FE 0%, #F3E8FF 100%);
-      border: none;
-    }
-    
-    .card h4 {
-      margin-top: 0;
-      color: var(--dark);
-      display: flex;
-      align-items: center;
-      gap: 10px;
-    }
-    
-    .card h4 .icon {
-      font-size: 1.5rem;
-    }
-    
-    .card p {
-      font-size: 0.95rem;
-      margin-bottom: 0;
-    }
-    
-    /* Tables */
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      margin: 20px 0;
-      font-size: 0.95rem;
-    }
-    
-    th, td {
-      padding: 12px 16px;
-      text-align: left;
-      border-bottom: 1px solid var(--border);
-    }
-    
-    th {
-      background: var(--light);
-      font-weight: 600;
-      color: var(--dark);
-    }
-    
-    tr:hover {
-      background: var(--light);
-    }
-    
-    .success { color: var(--secondary); font-weight: 600; }
-    .warning { color: var(--accent); font-weight: 600; }
-    .danger { color: var(--danger); font-weight: 600; }
-    
-    /* Architecture Diagram */
-    .diagram {
-      background: var(--light);
-      border-radius: 12px;
-      padding: 30px;
-      margin: 30px 0;
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 0.85rem;
-      line-height: 1.4;
-      overflow-x: auto;
-    }
-    
-    .diagram pre {
-      margin: 0;
-      white-space: pre;
-    }
-    
-    /* Flow Diagram */
-    .flow {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin: 40px 0;
-      padding: 30px;
-      background: var(--light);
-      border-radius: 12px;
-    }
-    
-    .flow-item {
-      text-align: center;
-      flex: 1;
-    }
-    
-    .flow-item .box {
-      background: white;
-      border: 2px solid var(--primary);
-      border-radius: 8px;
-      padding: 15px 20px;
-      font-weight: 500;
-      margin-bottom: 10px;
-    }
-    
-    .flow-item .label {
-      font-size: 0.85rem;
-      color: var(--gray);
-    }
-    
-    .flow-arrow {
-      font-size: 2rem;
-      color: var(--primary);
-      padding: 0 10px;
-    }
-    
-    /* Stats */
-    .stats-grid {
-      display: grid;
-      grid-template-columns: repeat(4, 1fr);
-      gap: 20px;
-      margin: 30px 0;
-    }
-    
-    .stat {
-      text-align: center;
-      padding: 25px;
-      background: var(--light);
-      border-radius: 12px;
-    }
-    
-    .stat .value {
-      font-size: 2.5rem;
-      font-weight: 700;
-      color: var(--primary);
-    }
-    
-    .stat .label {
-      font-size: 0.9rem;
-      color: var(--gray);
-      margin-top: 5px;
-    }
-    
-    /* Timeline */
-    .timeline {
-      position: relative;
-      margin: 30px 0;
-      padding-left: 30px;
-    }
-    
-    .timeline::before {
-      content: '';
-      position: absolute;
-      left: 0;
-      top: 0;
-      bottom: 0;
-      width: 3px;
-      background: var(--primary);
-      border-radius: 3px;
-    }
-    
-    .timeline-item {
-      position: relative;
-      margin-bottom: 25px;
-      padding-left: 25px;
-    }
-    
-    .timeline-item::before {
-      content: '';
-      position: absolute;
-      left: -30px;
-      top: 5px;
-      width: 12px;
-      height: 12px;
-      background: var(--primary);
-      border-radius: 50%;
-      border: 3px solid white;
-      box-shadow: 0 0 0 3px var(--primary);
-    }
-    
-    .timeline-item h4 {
-      margin: 0 0 5px 0;
-      color: var(--dark);
-    }
-    
-    .timeline-item p {
-      margin: 0;
-      font-size: 0.95rem;
-    }
-    
-    /* Code */
-    code {
-      font-family: 'JetBrains Mono', monospace;
-      background: var(--light);
-      padding: 2px 6px;
-      border-radius: 4px;
-      font-size: 0.9em;
-    }
-    
-    /* Lists */
-    ul, ol {
-      margin: 15px 0;
-      padding-left: 25px;
-    }
-    
-    li {
-      margin-bottom: 10px;
-      color: var(--gray);
-    }
-    
-    li strong {
-      color: var(--dark);
-    }
-    
-    /* Highlight Box */
-    .highlight-box {
-      background: linear-gradient(135deg, #E8F0FE 0%, #E8F5E9 100%);
-      border-left: 4px solid var(--primary);
-      padding: 20px 25px;
-      border-radius: 0 12px 12px 0;
-      margin: 25px 0;
-    }
-    
-    .highlight-box h4 {
-      margin-top: 0;
-      color: var(--primary);
-    }
-    
-    /* Page Number */
-    .page-number {
-      position: absolute;
-      bottom: 30px;
-      right: 40px;
-      font-size: 0.9rem;
-      color: var(--gray);
-    }
-    
-    /* Print Styles */
-    @media print {
-      .page {
-        padding: 40px 60px;
-        min-height: auto;
-        page-break-inside: avoid;
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>tldraw-sync-gcp Architecture Presentation</title>
+    <style>
+      @import url("https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap");
+
+      :root {
+        --primary: #4285f4;
+        --secondary: #34a853;
+        --accent: #fbbc04;
+        --danger: #ea4335;
+        --dark: #202124;
+        --gray: #5f6368;
+        --light: #f8f9fa;
+        --border: #dadce0;
       }
-      
-      .cover {
-        min-height: 100vh;
+
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
       }
-      
+
       body {
-        -webkit-print-color-adjust: exact;
-        print-color-adjust: exact;
+        font-family:
+          "Inter",
+          -apple-system,
+          BlinkMacSystemFont,
+          sans-serif;
+        color: var(--dark);
+        line-height: 1.6;
+        background: white;
       }
-    }
-    
-    /* Two Column Layout */
-    .two-col {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 40px;
-      margin: 20px 0;
-    }
-    
-    /* Phase boxes */
-    .phase-box {
-      background: white;
-      border: 2px solid var(--border);
-      border-radius: 12px;
-      padding: 20px;
-      margin: 15px 0;
-    }
-    
-    .phase-box.phase-1 {
-      border-color: var(--primary);
-      border-left-width: 4px;
-    }
-    
-    .phase-box.phase-2 {
-      border-color: var(--secondary);
-      border-left-width: 4px;
-    }
-    
-    .phase-box h4 {
-      margin-top: 0;
-    }
-    
-    .phase-box.phase-1 h4 { color: var(--primary); }
-    .phase-box.phase-2 h4 { color: var(--secondary); }
-  </style>
-</head>
-<body>
 
-  <!-- Cover Page -->
-  <div class="page cover">
-    <h1>tldraw-sync-gcp</h1>
-    <p class="subtitle">Production-Ready Real-Time Collaboration<br>on Google Cloud Platform</p>
-    <p class="meta">Architecture & Performance Overview</p>
-    <div class="logo-row">
-      <span>tldraw</span>
-      <span style="opacity: 0.8">+</span>
-      <span>Google Cloud</span>
-    </div>
-  </div>
+      .page {
+        width: 100%;
+        max-width: 1000px;
+        margin: 0 auto;
+        padding: 60px 80px;
+        page-break-after: always;
+        min-height: 100vh;
+        position: relative;
+      }
 
-  <!-- Executive Summary -->
-  <div class="page">
-    <h2>Executive Summary</h2>
-    
-    <p style="font-size: 1.1rem; color: var(--dark); margin-bottom: 30px;">
-      A horizontally scalable sync backend for tldraw, enabling real-time collaboration 
-      with <strong>7,000+ concurrent connections</strong> and <strong>99.99% reliability</strong>.
-    </p>
-    
-    <div class="stats-grid">
-      <div class="stat">
-        <div class="value">7K+</div>
-        <div class="label">Concurrent Users</div>
-      </div>
-      <div class="stat">
-        <div class="value">99.99%</div>
-        <div class="label">Success Rate</div>
-      </div>
-      <div class="stat">
-        <div class="value">235ms</div>
-        <div class="label">Connection Latency</div>
-      </div>
-      <div class="stat">
-        <div class="value">100+</div>
-        <div class="label">Concurrent Rooms</div>
-      </div>
-    </div>
-    
-    <h3>Key Achievements</h3>
-    
-    <div class="card-grid">
-      <div class="card highlight">
-        <h4><span class="icon">🔒</span> Zero Split-Brain</h4>
-        <p>Redis distributed locking ensures each room has exactly one owner at any time.</p>
-      </div>
-      <div class="card highlight">
-        <h4><span class="icon">🔄</span> Seamless Scaling</h4>
-        <p>Two-phase handover protocol enables safe room migration during pod scaling.</p>
-      </div>
-      <div class="card highlight">
-        <h4><span class="icon">💾</span> Zero Data Loss</h4>
-        <p>GCS persistence with automatic snapshots ensures durability across restarts.</p>
-      </div>
-      <div class="card highlight">
-        <h4><span class="icon">⚡</span> Low Latency</h4>
-        <p>WebSocket-based sync with server-side keep-alive for reliable connections.</p>
-      </div>
-    </div>
-    
-    <span class="page-number">2</span>
-  </div>
+      .page:last-child {
+        page-break-after: avoid;
+      }
 
-  <!-- Architecture Overview -->
-  <div class="page">
-    <h2>Architecture Overview</h2>
-    
-    <div class="diagram">
-<pre>
+      /* Cover Page */
+      .cover {
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+        text-align: center;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+      }
+
+      .cover h1 {
+        font-size: 3.5rem;
+        font-weight: 700;
+        margin-bottom: 20px;
+        letter-spacing: -1px;
+      }
+
+      .cover .subtitle {
+        font-size: 1.5rem;
+        font-weight: 400;
+        color: #ffffff;
+        margin-bottom: 60px;
+        text-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+      }
+
+      .cover .meta {
+        font-size: 1.1rem;
+        color: #ffffff;
+        font-weight: 500;
+        text-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+      }
+
+      .cover .logo-row {
+        display: flex;
+        gap: 40px;
+        align-items: center;
+        margin-top: 80px;
+      }
+
+      .cover .logo-row span {
+        font-size: 2rem;
+        font-weight: 600;
+      }
+
+      /* Section Headers */
+      h2 {
+        font-size: 2rem;
+        font-weight: 600;
+        color: var(--primary);
+        margin-bottom: 30px;
+        padding-bottom: 15px;
+        border-bottom: 3px solid var(--primary);
+      }
+
+      h3 {
+        font-size: 1.4rem;
+        font-weight: 600;
+        color: var(--dark);
+        margin: 30px 0 15px 0;
+      }
+
+      h4 {
+        font-size: 1.1rem;
+        font-weight: 600;
+        color: var(--gray);
+        margin: 20px 0 10px 0;
+      }
+
+      p {
+        margin-bottom: 15px;
+        color: var(--gray);
+      }
+
+      /* Cards */
+      .card-grid {
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+        gap: 20px;
+        margin: 30px 0;
+      }
+
+      .card-grid.three-col {
+        grid-template-columns: repeat(3, 1fr);
+      }
+
+      .card {
+        background: var(--light);
+        border-radius: 12px;
+        padding: 25px;
+        border: 1px solid var(--border);
+      }
+
+      .card.highlight {
+        background: linear-gradient(135deg, #e8f0fe 0%, #f3e8ff 100%);
+        border: none;
+      }
+
+      .card h4 {
+        margin-top: 0;
+        color: var(--dark);
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+
+      .card h4 .icon {
+        font-size: 1.5rem;
+      }
+
+      .card p {
+        font-size: 0.95rem;
+        margin-bottom: 0;
+      }
+
+      /* Tables */
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        margin: 20px 0;
+        font-size: 0.95rem;
+      }
+
+      th,
+      td {
+        padding: 12px 16px;
+        text-align: left;
+        border-bottom: 1px solid var(--border);
+      }
+
+      th {
+        background: var(--light);
+        font-weight: 600;
+        color: var(--dark);
+      }
+
+      tr:hover {
+        background: var(--light);
+      }
+
+      .success {
+        color: var(--secondary);
+        font-weight: 600;
+      }
+      .warning {
+        color: var(--accent);
+        font-weight: 600;
+      }
+      .danger {
+        color: var(--danger);
+        font-weight: 600;
+      }
+
+      /* Architecture Diagram */
+      .diagram {
+        background: var(--light);
+        border-radius: 12px;
+        padding: 30px;
+        margin: 30px 0;
+        font-family: "JetBrains Mono", monospace;
+        font-size: 0.85rem;
+        line-height: 1.4;
+        overflow-x: auto;
+      }
+
+      .diagram pre {
+        margin: 0;
+        white-space: pre;
+      }
+
+      /* Flow Diagram */
+      .flow {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin: 40px 0;
+        padding: 30px;
+        background: var(--light);
+        border-radius: 12px;
+      }
+
+      .flow-item {
+        text-align: center;
+        flex: 1;
+      }
+
+      .flow-item .box {
+        background: white;
+        border: 2px solid var(--primary);
+        border-radius: 8px;
+        padding: 15px 20px;
+        font-weight: 500;
+        margin-bottom: 10px;
+      }
+
+      .flow-item .label {
+        font-size: 0.85rem;
+        color: var(--gray);
+      }
+
+      .flow-arrow {
+        font-size: 2rem;
+        color: var(--primary);
+        padding: 0 10px;
+      }
+
+      /* Stats */
+      .stats-grid {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 20px;
+        margin: 30px 0;
+      }
+
+      .stat {
+        text-align: center;
+        padding: 25px;
+        background: var(--light);
+        border-radius: 12px;
+      }
+
+      .stat .value {
+        font-size: 2.5rem;
+        font-weight: 700;
+        color: var(--primary);
+      }
+
+      .stat .label {
+        font-size: 0.9rem;
+        color: var(--gray);
+        margin-top: 5px;
+      }
+
+      /* Timeline */
+      .timeline {
+        position: relative;
+        margin: 30px 0;
+        padding-left: 30px;
+      }
+
+      .timeline::before {
+        content: "";
+        position: absolute;
+        left: 0;
+        top: 0;
+        bottom: 0;
+        width: 3px;
+        background: var(--primary);
+        border-radius: 3px;
+      }
+
+      .timeline-item {
+        position: relative;
+        margin-bottom: 25px;
+        padding-left: 25px;
+      }
+
+      .timeline-item::before {
+        content: "";
+        position: absolute;
+        left: -30px;
+        top: 5px;
+        width: 12px;
+        height: 12px;
+        background: var(--primary);
+        border-radius: 50%;
+        border: 3px solid white;
+        box-shadow: 0 0 0 3px var(--primary);
+      }
+
+      .timeline-item h4 {
+        margin: 0 0 5px 0;
+        color: var(--dark);
+      }
+
+      .timeline-item p {
+        margin: 0;
+        font-size: 0.95rem;
+      }
+
+      /* Code */
+      code {
+        font-family: "JetBrains Mono", monospace;
+        background: var(--light);
+        padding: 2px 6px;
+        border-radius: 4px;
+        font-size: 0.9em;
+      }
+
+      /* Lists */
+      ul,
+      ol {
+        margin: 15px 0;
+        padding-left: 25px;
+      }
+
+      li {
+        margin-bottom: 10px;
+        color: var(--gray);
+      }
+
+      li strong {
+        color: var(--dark);
+      }
+
+      /* Highlight Box */
+      .highlight-box {
+        background: linear-gradient(135deg, #e8f0fe 0%, #e8f5e9 100%);
+        border-left: 4px solid var(--primary);
+        padding: 20px 25px;
+        border-radius: 0 12px 12px 0;
+        margin: 25px 0;
+      }
+
+      .highlight-box h4 {
+        margin-top: 0;
+        color: var(--primary);
+      }
+
+      /* Page Number */
+      .page-number {
+        position: absolute;
+        bottom: 30px;
+        right: 40px;
+        font-size: 0.9rem;
+        color: var(--gray);
+      }
+
+      /* Print Styles */
+      @media print {
+        .page {
+          padding: 40px 60px;
+          min-height: auto;
+          page-break-inside: avoid;
+        }
+
+        .cover {
+          min-height: 100vh;
+        }
+
+        body {
+          -webkit-print-color-adjust: exact;
+          print-color-adjust: exact;
+        }
+      }
+
+      /* Two Column Layout */
+      .two-col {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 40px;
+        margin: 20px 0;
+      }
+
+      /* Phase boxes */
+      .phase-box {
+        background: white;
+        border: 2px solid var(--border);
+        border-radius: 12px;
+        padding: 20px;
+        margin: 15px 0;
+      }
+
+      .phase-box.phase-1 {
+        border-color: var(--primary);
+        border-left-width: 4px;
+      }
+
+      .phase-box.phase-2 {
+        border-color: var(--secondary);
+        border-left-width: 4px;
+      }
+
+      .phase-box h4 {
+        margin-top: 0;
+      }
+
+      .phase-box.phase-1 h4 {
+        color: var(--primary);
+      }
+      .phase-box.phase-2 h4 {
+        color: var(--secondary);
+      }
+    </style>
+  </head>
+  <body>
+    <!-- Cover Page -->
+    <div class="page cover">
+      <h1>tldraw-sync-gcp</h1>
+      <p class="subtitle">Production-Ready Real-Time Collaboration<br />on Google Cloud Platform</p>
+      <p class="meta">Architecture & Performance Overview</p>
+      <div class="logo-row">
+        <span>tldraw</span>
+        <span style="opacity: 0.8">+</span>
+        <span>Google Cloud</span>
+      </div>
+    </div>
+
+    <!-- Executive Summary -->
+    <div class="page">
+      <h2>Executive Summary</h2>
+
+      <p style="font-size: 1.1rem; color: var(--dark); margin-bottom: 30px">
+        A horizontally scalable sync backend for tldraw, enabling real-time collaboration with
+        <strong>7,000+ concurrent connections</strong> and <strong>99.99% reliability</strong>.
+      </p>
+
+      <div class="stats-grid">
+        <div class="stat">
+          <div class="value">7K+</div>
+          <div class="label">Concurrent Users</div>
+        </div>
+        <div class="stat">
+          <div class="value">99.99%</div>
+          <div class="label">Success Rate</div>
+        </div>
+        <div class="stat">
+          <div class="value">235ms</div>
+          <div class="label">Connection Latency</div>
+        </div>
+        <div class="stat">
+          <div class="value">100+</div>
+          <div class="label">Concurrent Rooms</div>
+        </div>
+      </div>
+
+      <h3>Key Achievements</h3>
+
+      <div class="card-grid">
+        <div class="card highlight">
+          <h4><span class="icon">🔒</span> Zero Split-Brain</h4>
+          <p>Redis distributed locking ensures each room has exactly one owner at any time.</p>
+        </div>
+        <div class="card highlight">
+          <h4><span class="icon">🔄</span> Seamless Scaling</h4>
+          <p>Two-phase handover protocol enables safe room migration during pod scaling.</p>
+        </div>
+        <div class="card highlight">
+          <h4><span class="icon">💾</span> Zero Data Loss</h4>
+          <p>GCS persistence with automatic snapshots ensures durability across restarts.</p>
+        </div>
+        <div class="card highlight">
+          <h4><span class="icon">⚡</span> Low Latency</h4>
+          <p>WebSocket-based sync with server-side keep-alive for reliable connections.</p>
+        </div>
+      </div>
+
+      <span class="page-number">2</span>
+    </div>
+
+    <!-- Architecture Overview -->
+    <div class="page">
+      <h2>Architecture Overview</h2>
+
+      <div class="diagram">
+        <pre>
                               ┌─────────────────────────────────────┐
                               │          tldraw Clients             │
                               │    (React App with @tldraw/sync)    │
@@ -525,240 +543,283 @@
              │   • Locks   │             │ • Snapshots │
              │   • Pub/Sub │             │ • Assets    │
              └─────────────┘             └─────────────┘
-</pre>
-    </div>
-    
-    <div class="highlight-box">
-      <h4>Key Design Decision: Consistent Hashing</h4>
-      <p>NGINX routes requests by URI hash, ensuring all users in the same room connect to the same pod. 
-         When pods scale, the two-phase handover protocol safely migrates rooms.</p>
-    </div>
-    
-    <span class="page-number">3</span>
-  </div>
+</pre
+        >
+      </div>
 
-  <!-- Technology Stack -->
-  <div class="page">
-    <h2>Technology Stack</h2>
-    
-    <div class="two-col">
-      <div>
-        <h3>Backend Services</h3>
-        <table>
-          <tr><th>Component</th><th>Technology</th></tr>
-          <tr><td>Runtime</td><td>Node.js 20</td></tr>
-          <tr><td>HTTP Server</td><td>Express 5</td></tr>
-          <tr><td>WebSocket</td><td>ws library</td></tr>
-          <tr><td>Sync Protocol</td><td>@tldraw/sync-core</td></tr>
-          <tr><td>Metrics</td><td>Prometheus</td></tr>
-        </table>
+      <div class="highlight-box">
+        <h4>Key Design Decision: Consistent Hashing</h4>
+        <p>
+          NGINX routes requests by URI hash, ensuring all users in the same room connect to the same
+          pod. When pods scale, the two-phase handover protocol safely migrates rooms.
+        </p>
       </div>
-      <div>
-        <h3>GCP Services</h3>
-        <table>
-          <tr><th>Service</th><th>Purpose</th></tr>
-          <tr><td>GKE</td><td>Container orchestration</td></tr>
-          <tr><td>Cloud Storage</td><td>Room snapshots & assets</td></tr>
-          <tr><td>Memorystore</td><td>Redis for locking</td></tr>
-          <tr><td>Cloud Load Balancing</td><td>Traffic distribution</td></tr>
-          <tr><td>Workload Identity</td><td>Secure GCS access</td></tr>
-        </table>
-      </div>
-    </div>
-    
-    <h3>Key Configuration Parameters</h3>
-    
-    <table>
-      <tr>
-        <th>Parameter</th>
-        <th>Value</th>
-        <th>Purpose</th>
-      </tr>
-      <tr>
-        <td><code>LOCK_TIMEOUT_SEC</code></td>
-        <td>10s</td>
-        <td>Redis lock TTL (auto-expires if pod crashes)</td>
-      </tr>
-      <tr>
-        <td><code>HEARTBEAT_INTERVAL_MS</code></td>
-        <td>5s</td>
-        <td>Lock renewal frequency</td>
-      </tr>
-      <tr>
-        <td><code>PING_INTERVAL_MS</code></td>
-        <td>25s</td>
-        <td>WebSocket keep-alive (under GCP's 30s timeout)</td>
-      </tr>
-      <tr>
-        <td><code>HANDOVER_TIMEOUT_MS</code></td>
-        <td>5s</td>
-        <td>Max wait for lock release during migration</td>
-      </tr>
-      <tr>
-        <td><code>THROTTLE_SAVE_MS</code></td>
-        <td>10s</td>
-        <td>GCS snapshot frequency</td>
-      </tr>
-    </table>
-    
-    <span class="page-number">4</span>
-  </div>
 
-  <!-- Room Ownership Model -->
-  <div class="page">
-    <h2>Stateful Room Ownership</h2>
-    
-    <p style="font-size: 1.1rem; margin-bottom: 30px;">
-      Each room is owned by exactly <strong>one pod</strong> at any time, preventing split-brain scenarios 
-      and ensuring data consistency across all connected users.
-    </p>
-    
-    <h3>How It Works</h3>
-    
-    <div class="flow">
-      <div class="flow-item">
-        <div class="box">User Connects</div>
-        <div class="label">/api/connect/{roomId}</div>
-      </div>
-      <div class="flow-arrow">→</div>
-      <div class="flow-item">
-        <div class="box">NGINX Routes</div>
-        <div class="label">hash(roomId) → Pod</div>
-      </div>
-      <div class="flow-arrow">→</div>
-      <div class="flow-item">
-        <div class="box">Acquire Lock</div>
-        <div class="label">Redis SETNX</div>
-      </div>
-      <div class="flow-arrow">→</div>
-      <div class="flow-item">
-        <div class="box">Serve Room</div>
-        <div class="label">Load from GCS</div>
-      </div>
+      <span class="page-number">3</span>
     </div>
-    
-    <h3>Redis Lock Design</h3>
-    
-    <div class="card-grid three-col">
-      <div class="card">
-        <h4>Lock Key</h4>
-        <p><code>lock:room:{roomId}</code></p>
-        <p style="margin-top: 10px;">Unique key per room</p>
-      </div>
-      <div class="card">
-        <h4>Lock Value</h4>
-        <p><code>{pod-unique-id}</code></p>
-        <p style="margin-top: 10px;">Identifies owner pod</p>
-      </div>
-      <div class="card">
-        <h4>Lock TTL</h4>
-        <p><code>10 seconds</code></p>
-        <p style="margin-top: 10px;">Auto-expires on crash</p>
-      </div>
-    </div>
-    
-    <h3>Failure Handling</h3>
-    
-    <table>
-      <tr>
-        <th>Scenario</th>
-        <th>Behavior</th>
-        <th>Recovery Time</th>
-      </tr>
-      <tr>
-        <td>Pod crashes</td>
-        <td>Lock expires, another pod acquires</td>
-        <td>~10 seconds</td>
-      </tr>
-      <tr>
-        <td>Network partition</td>
-        <td>Lock expires, GCS has last saved state</td>
-        <td>~10 seconds</td>
-      </tr>
-      <tr>
-        <td>Graceful shutdown</td>
-        <td>Lock deleted immediately, snapshot saved</td>
-        <td>Instant</td>
-      </tr>
-    </table>
-    
-    <span class="page-number">5</span>
-  </div>
 
-  <!-- Two-Phase Handover -->
-  <div class="page">
-    <h2>Two-Phase Coordinated Handover</h2>
-    
-    <p style="font-size: 1.1rem; margin-bottom: 20px;">
-      When pods scale, the hash ring changes and rooms need to migrate. The two-phase protocol ensures 
-      users are <strong>only disconnected after the new owner is ready</strong>.
-    </p>
-    
-    <h3>Why Two-Phase?</h3>
-    
-    <div class="highlight-box">
-      <p><strong>Problem:</strong> Single-phase handover closes user connections before the new pod is ready. 
-         If the new pod is slow or crashes, users get stuck in retry loops.</p>
-      <p style="margin-bottom: 0;"><strong>Solution:</strong> Wait for "ready" signal before disconnecting users.</p>
-    </div>
-    
-    <div class="two-col">
-      <div class="phase-box phase-1">
-        <h4>Phase 1: Lock Transfer</h4>
-        <ol>
-          <li>Pod C fails to acquire lock (Pod A owns it)</li>
-          <li>Pod C subscribes to <code>handover-lock-released:{roomId}</code></li>
-          <li>Pod C publishes request to <code>room-handover</code></li>
-          <li>Pod A saves state to GCS</li>
-          <li>Pod A releases lock and signals</li>
-        </ol>
-      </div>
-      <div class="phase-box phase-2">
-        <h4>Phase 2: Ready Confirmation</h4>
-        <ol>
-          <li>Pod C acquires lock</li>
-          <li>Pod C loads state from GCS</li>
-          <li>Pod C signals <code>handover-ready:{roomId}</code></li>
-          <li>Pod A receives signal, NOW closes sockets (1013)</li>
-          <li>Users reconnect to Pod C (ready!)</li>
-        </ol>
-      </div>
-    </div>
-    
-    <h3>Redis Pub/Sub Channels</h3>
-    
-    <table>
-      <tr>
-        <th>Channel</th>
-        <th>Direction</th>
-        <th>Purpose</th>
-      </tr>
-      <tr>
-        <td><code>room-handover</code></td>
-        <td>Pod C → Pod A</td>
-        <td>Request room release</td>
-      </tr>
-      <tr>
-        <td><code>handover-lock-released:{roomId}</code></td>
-        <td>Pod A → Pod C</td>
-        <td>Lock is free, acquire now</td>
-      </tr>
-      <tr>
-        <td><code>handover-ready:{roomId}</code></td>
-        <td>Pod C → Pod A</td>
-        <td>Ready to serve, close your sockets</td>
-      </tr>
-    </table>
-    
-    <span class="page-number">6</span>
-  </div>
+    <!-- Technology Stack -->
+    <div class="page">
+      <h2>Technology Stack</h2>
 
-  <!-- Handover Sequence Diagram -->
-  <div class="page">
-    <h2>Handover Sequence</h2>
-    
-    <div class="diagram">
-<pre>
+      <div class="two-col">
+        <div>
+          <h3>Backend Services</h3>
+          <table>
+            <tr>
+              <th>Component</th>
+              <th>Technology</th>
+            </tr>
+            <tr>
+              <td>Runtime</td>
+              <td>Node.js 20</td>
+            </tr>
+            <tr>
+              <td>HTTP Server</td>
+              <td>Express 5</td>
+            </tr>
+            <tr>
+              <td>WebSocket</td>
+              <td>ws library</td>
+            </tr>
+            <tr>
+              <td>Sync Protocol</td>
+              <td>@tldraw/sync-core</td>
+            </tr>
+            <tr>
+              <td>Metrics</td>
+              <td>Prometheus</td>
+            </tr>
+          </table>
+        </div>
+        <div>
+          <h3>GCP Services</h3>
+          <table>
+            <tr>
+              <th>Service</th>
+              <th>Purpose</th>
+            </tr>
+            <tr>
+              <td>GKE</td>
+              <td>Container orchestration</td>
+            </tr>
+            <tr>
+              <td>Cloud Storage</td>
+              <td>Room snapshots & assets</td>
+            </tr>
+            <tr>
+              <td>Memorystore</td>
+              <td>Redis for locking</td>
+            </tr>
+            <tr>
+              <td>Cloud Load Balancing</td>
+              <td>Traffic distribution</td>
+            </tr>
+            <tr>
+              <td>Workload Identity</td>
+              <td>Secure GCS access</td>
+            </tr>
+          </table>
+        </div>
+      </div>
+
+      <h3>Key Configuration Parameters</h3>
+
+      <table>
+        <tr>
+          <th>Parameter</th>
+          <th>Value</th>
+          <th>Purpose</th>
+        </tr>
+        <tr>
+          <td><code>LOCK_TIMEOUT_SEC</code></td>
+          <td>10s</td>
+          <td>Redis lock TTL (auto-expires if pod crashes)</td>
+        </tr>
+        <tr>
+          <td><code>HEARTBEAT_INTERVAL_MS</code></td>
+          <td>5s</td>
+          <td>Lock renewal frequency</td>
+        </tr>
+        <tr>
+          <td><code>PING_INTERVAL_MS</code></td>
+          <td>25s</td>
+          <td>WebSocket keep-alive (under GCP's 30s timeout)</td>
+        </tr>
+        <tr>
+          <td><code>HANDOVER_TIMEOUT_MS</code></td>
+          <td>5s</td>
+          <td>Max wait for lock release during migration</td>
+        </tr>
+        <tr>
+          <td><code>THROTTLE_SAVE_MS</code></td>
+          <td>10s</td>
+          <td>GCS snapshot frequency</td>
+        </tr>
+      </table>
+
+      <span class="page-number">4</span>
+    </div>
+
+    <!-- Room Ownership Model -->
+    <div class="page">
+      <h2>Stateful Room Ownership</h2>
+
+      <p style="font-size: 1.1rem; margin-bottom: 30px">
+        Each room is owned by exactly <strong>one pod</strong> at any time, preventing split-brain
+        scenarios and ensuring data consistency across all connected users.
+      </p>
+
+      <h3>How It Works</h3>
+
+      <div class="flow">
+        <div class="flow-item">
+          <div class="box">User Connects</div>
+          <div class="label">/api/connect/{roomId}</div>
+        </div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-item">
+          <div class="box">NGINX Routes</div>
+          <div class="label">hash(roomId) → Pod</div>
+        </div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-item">
+          <div class="box">Acquire Lock</div>
+          <div class="label">Redis SETNX</div>
+        </div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-item">
+          <div class="box">Serve Room</div>
+          <div class="label">Load from GCS</div>
+        </div>
+      </div>
+
+      <h3>Redis Lock Design</h3>
+
+      <div class="card-grid three-col">
+        <div class="card">
+          <h4>Lock Key</h4>
+          <p><code>lock:room:{roomId}</code></p>
+          <p style="margin-top: 10px">Unique key per room</p>
+        </div>
+        <div class="card">
+          <h4>Lock Value</h4>
+          <p><code>{pod-unique-id}</code></p>
+          <p style="margin-top: 10px">Identifies owner pod</p>
+        </div>
+        <div class="card">
+          <h4>Lock TTL</h4>
+          <p><code>10 seconds</code></p>
+          <p style="margin-top: 10px">Auto-expires on crash</p>
+        </div>
+      </div>
+
+      <h3>Failure Handling</h3>
+
+      <table>
+        <tr>
+          <th>Scenario</th>
+          <th>Behavior</th>
+          <th>Recovery Time</th>
+        </tr>
+        <tr>
+          <td>Pod crashes</td>
+          <td>Lock expires, another pod acquires</td>
+          <td>~10 seconds</td>
+        </tr>
+        <tr>
+          <td>Network partition</td>
+          <td>Lock expires, GCS has last saved state</td>
+          <td>~10 seconds</td>
+        </tr>
+        <tr>
+          <td>Graceful shutdown</td>
+          <td>Lock deleted immediately, snapshot saved</td>
+          <td>Instant</td>
+        </tr>
+      </table>
+
+      <span class="page-number">5</span>
+    </div>
+
+    <!-- Two-Phase Handover -->
+    <div class="page">
+      <h2>Two-Phase Coordinated Handover</h2>
+
+      <p style="font-size: 1.1rem; margin-bottom: 20px">
+        When pods scale, the hash ring changes and rooms need to migrate. The two-phase protocol
+        ensures users are <strong>only disconnected after the new owner is ready</strong>.
+      </p>
+
+      <h3>Why Two-Phase?</h3>
+
+      <div class="highlight-box">
+        <p>
+          <strong>Problem:</strong> Single-phase handover closes user connections before the new pod
+          is ready. If the new pod is slow or crashes, users get stuck in retry loops.
+        </p>
+        <p style="margin-bottom: 0">
+          <strong>Solution:</strong> Wait for "ready" signal before disconnecting users.
+        </p>
+      </div>
+
+      <div class="two-col">
+        <div class="phase-box phase-1">
+          <h4>Phase 1: Lock Transfer</h4>
+          <ol>
+            <li>Pod C fails to acquire lock (Pod A owns it)</li>
+            <li>Pod C subscribes to <code>handover-lock-released:{roomId}</code></li>
+            <li>Pod C publishes request to <code>room-handover</code></li>
+            <li>Pod A saves state to GCS</li>
+            <li>Pod A releases lock and signals</li>
+          </ol>
+        </div>
+        <div class="phase-box phase-2">
+          <h4>Phase 2: Ready Confirmation</h4>
+          <ol>
+            <li>Pod C acquires lock</li>
+            <li>Pod C loads state from GCS</li>
+            <li>Pod C signals <code>handover-ready:{roomId}</code></li>
+            <li>Pod A receives signal, NOW closes sockets (1013)</li>
+            <li>Users reconnect to Pod C (ready!)</li>
+          </ol>
+        </div>
+      </div>
+
+      <h3>Redis Pub/Sub Channels</h3>
+
+      <table>
+        <tr>
+          <th>Channel</th>
+          <th>Direction</th>
+          <th>Purpose</th>
+        </tr>
+        <tr>
+          <td><code>room-handover</code></td>
+          <td>Pod C → Pod A</td>
+          <td>Request room release</td>
+        </tr>
+        <tr>
+          <td><code>handover-lock-released:{roomId}</code></td>
+          <td>Pod A → Pod C</td>
+          <td>Lock is free, acquire now</td>
+        </tr>
+        <tr>
+          <td><code>handover-ready:{roomId}</code></td>
+          <td>Pod C → Pod A</td>
+          <td>Ready to serve, close your sockets</td>
+        </tr>
+      </table>
+
+      <span class="page-number">6</span>
+    </div>
+
+    <!-- Handover Sequence Diagram -->
+    <div class="page">
+      <h2>Handover Sequence</h2>
+
+      <div class="diagram">
+        <pre>
    Pod C (New Target)              Redis                    Pod A (Current Owner)
          │                           │                              │
          │  1. SETNX lock:room:xyz   │                              │
@@ -801,254 +862,268 @@
          │  10. Users 1-5 reconnect  │                              │
          │      (Pod C is READY)     │                              │
          ▼                           ▼                              ▼
-</pre>
-    </div>
-    
-    <div class="highlight-box">
-      <h4>Key Insight</h4>
-      <p>Users stay connected to Pod A until step 9. They only disconnect when Pod C is fully ready to serve them. 
-         This eliminates the "retry loop" problem of single-phase handover.</p>
-    </div>
-    
-    <span class="page-number">7</span>
-  </div>
+</pre
+        >
+      </div>
 
-  <!-- Performance Results -->
-  <div class="page">
-    <h2>Performance & Load Testing</h2>
-    
-    <p style="font-size: 1.1rem; margin-bottom: 30px;">
-      Stress tested with k6 from within GCP (Cloud Shell) to eliminate network variables.
-    </p>
-    
-    <h3>Test Infrastructure</h3>
-    
-    <div class="card-grid three-col">
-      <div class="card">
-        <h4>NGINX Ingress</h4>
-        <p><strong>5 replicas</strong></p>
+      <div class="highlight-box">
+        <h4>Key Insight</h4>
+        <p>
+          Users stay connected to Pod A until step 9. They only disconnect when Pod C is fully ready
+          to serve them. This eliminates the "retry loop" problem of single-phase handover.
+        </p>
       </div>
-      <div class="card">
-        <h4>App Pods</h4>
-        <p><strong>10 replicas</strong></p>
-      </div>
-      <div class="card">
-        <h4>GKE Nodes</h4>
-        <p><strong>3× e2-medium</strong></p>
-      </div>
-    </div>
-    
-    <h3>Capacity Results</h3>
-    
-    <table>
-      <tr>
-        <th>Concurrent Users</th>
-        <th>Configuration</th>
-        <th>Success Rate</th>
-        <th>Status</th>
-      </tr>
-      <tr>
-        <td><strong>5,000</strong></td>
-        <td>50 rooms × 100 users</td>
-        <td class="success">100%</td>
-        <td>✅ Perfect</td>
-      </tr>
-      <tr>
-        <td><strong>7,000</strong></td>
-        <td>100 rooms × 70 users</td>
-        <td class="success">99.99%</td>
-        <td>✅ Optimal</td>
-      </tr>
-      <tr>
-        <td><strong>10,000</strong></td>
-        <td>100 rooms × 100 users</td>
-        <td class="danger">30%</td>
-        <td>⚠️ Exceeded capacity</td>
-      </tr>
-    </table>
-    
-    <h3>Connection Latency</h3>
-    
-    <table>
-      <tr>
-        <th>Scenario</th>
-        <th>Latency</th>
-        <th>Notes</th>
-      </tr>
-      <tr>
-        <td>Normal load</td>
-        <td class="success">~235ms</td>
-        <td>Optimal user experience</td>
-      </tr>
-      <tr>
-        <td>Heavy load (7,000 VUs)</td>
-        <td class="warning">~10-16s</td>
-        <td>Connection queueing under stress</td>
-      </tr>
-      <tr>
-        <td>Peak load</td>
-        <td>~20s p(95)</td>
-        <td>At capacity limits</td>
-      </tr>
-    </table>
-    
-    <span class="page-number">8</span>
-  </div>
 
-  <!-- Scaling Recommendations -->
-  <div class="page">
-    <h2>Scaling Recommendations</h2>
-    
-    <h3>Current Capacity</h3>
-    
-    <div class="highlight-box">
-      <p style="font-size: 1.2rem; margin-bottom: 0;">
-        <strong>~7,000 concurrent WebSocket connections</strong> with 99.99% reliability
+      <span class="page-number">7</span>
+    </div>
+
+    <!-- Performance Results -->
+    <div class="page">
+      <h2>Performance & Load Testing</h2>
+
+      <p style="font-size: 1.1rem; margin-bottom: 30px">
+        Stress tested with k6 from within GCP (Cloud Shell) to eliminate network variables.
       </p>
-    </div>
-    
-    <h3>To Scale Beyond 7,000 Connections</h3>
-    
-    <div class="timeline">
-      <div class="timeline-item">
-        <h4>1. Increase NGINX Ingress Replicas</h4>
-        <p>Scale from 5 to 10+ replicas. Each NGINX pod handles ~1,400 connections.</p>
-      </div>
-      <div class="timeline-item">
-        <h4>2. Use Larger Node Types</h4>
-        <p>Upgrade from e2-medium to e2-standard-4 or larger for more CPU/memory per node.</p>
-      </div>
-      <div class="timeline-item">
-        <h4>3. Tune NGINX Worker Connections</h4>
-        <p>Increase <code>worker-connections</code> in NGINX ConfigMap (default: 1024 → 65536).</p>
-      </div>
-      <div class="timeline-item">
-        <h4>4. Add More Nodes</h4>
-        <p>Scale node pool from 3 to 5+ nodes for better pod distribution.</p>
-      </div>
-    </div>
-    
-    <h3>Estimated Capacity by Configuration</h3>
-    
-    <table>
-      <tr>
-        <th>NGINX Replicas</th>
-        <th>App Pods</th>
-        <th>Nodes</th>
-        <th>Estimated Capacity</th>
-      </tr>
-      <tr>
-        <td>5</td>
-        <td>10</td>
-        <td>3× e2-medium</td>
-        <td>~7,000 connections</td>
-      </tr>
-      <tr>
-        <td>10</td>
-        <td>20</td>
-        <td>5× e2-standard-4</td>
-        <td>~15,000 connections</td>
-      </tr>
-      <tr>
-        <td>20</td>
-        <td>40</td>
-        <td>10× e2-standard-4</td>
-        <td>~30,000 connections</td>
-      </tr>
-    </table>
-    
-    <span class="page-number">9</span>
-  </div>
 
-  <!-- Monitoring & Observability -->
-  <div class="page">
-    <h2>Monitoring & Observability</h2>
-    
-    <h3>Prometheus Metrics</h3>
-    
-    <table>
-      <tr>
-        <th>Metric</th>
-        <th>Type</th>
-        <th>Description</th>
-      </tr>
-      <tr>
-        <td><code>tldraw_active_rooms</code></td>
-        <td>Gauge</td>
-        <td>Rooms currently in memory</td>
-      </tr>
-      <tr>
-        <td><code>tldraw_active_connections</code></td>
-        <td>Gauge</td>
-        <td>Active WebSocket connections</td>
-      </tr>
-      <tr>
-        <td><code>tldraw_handover_requests_total</code></td>
-        <td>Counter</td>
-        <td>Handover requests initiated</td>
-      </tr>
-      <tr>
-        <td><code>tldraw_handover_success_total</code></td>
-        <td>Counter</td>
-        <td>Successful handovers completed</td>
-      </tr>
-      <tr>
-        <td><code>tldraw_handover_timeouts_total</code></td>
-        <td>Counter</td>
-        <td>Handover timeouts (indicates issues)</td>
-      </tr>
-      <tr>
-        <td><code>tldraw_handover_duration_seconds</code></td>
-        <td>Histogram</td>
-        <td>Time from request to lock acquisition</td>
-      </tr>
-    </table>
-    
-    <h3>Recommended Alerts</h3>
-    
-    <div class="card-grid">
-      <div class="card">
-        <h4>High Handover Timeout Rate</h4>
-        <p><code>rate(tldraw_handover_timeouts_total[5m]) / rate(tldraw_handover_requests_total[5m]) > 0.1</code></p>
-        <p style="margin-top: 10px; color: var(--danger);">May indicate network issues or pod health problems</p>
-      </div>
-      <div class="card">
-        <h4>Slow Handovers</h4>
-        <p><code>histogram_quantile(0.95, tldraw_handover_duration_seconds_bucket) > 3</code></p>
-        <p style="margin-top: 10px; color: var(--accent);">Handovers taking longer than expected</p>
-      </div>
-    </div>
-    
-    <h3>Health Endpoints</h3>
-    
-    <table>
-      <tr>
-        <th>Endpoint</th>
-        <th>Purpose</th>
-        <th>Used By</th>
-      </tr>
-      <tr>
-        <td><code>GET /api/health</code></td>
-        <td>Liveness check</td>
-        <td>Kubernetes probes</td>
-      </tr>
-      <tr>
-        <td><code>GET /metrics</code></td>
-        <td>Prometheus metrics</td>
-        <td>Monitoring stack</td>
-      </tr>
-    </table>
-    
-    <span class="page-number">10</span>
-  </div>
+      <h3>Test Infrastructure</h3>
 
-  <!-- Code Snippets Part 1 -->
-  <div class="page">
-    <h2>Code Reference: Connection Flow</h2>
-    
-    <h3>1. WebSocket Upgrade & Keep-Alive</h3>
-    <div class="diagram">
-<pre style="font-size: 0.8rem;">
+      <div class="card-grid three-col">
+        <div class="card">
+          <h4>NGINX Ingress</h4>
+          <p><strong>5 replicas</strong></p>
+        </div>
+        <div class="card">
+          <h4>App Pods</h4>
+          <p><strong>10 replicas</strong></p>
+        </div>
+        <div class="card">
+          <h4>GKE Nodes</h4>
+          <p><strong>3× e2-medium</strong></p>
+        </div>
+      </div>
+
+      <h3>Capacity Results</h3>
+
+      <table>
+        <tr>
+          <th>Concurrent Users</th>
+          <th>Configuration</th>
+          <th>Success Rate</th>
+          <th>Status</th>
+        </tr>
+        <tr>
+          <td><strong>5,000</strong></td>
+          <td>50 rooms × 100 users</td>
+          <td class="success">100%</td>
+          <td>✅ Perfect</td>
+        </tr>
+        <tr>
+          <td><strong>7,000</strong></td>
+          <td>100 rooms × 70 users</td>
+          <td class="success">99.99%</td>
+          <td>✅ Optimal</td>
+        </tr>
+        <tr>
+          <td><strong>10,000</strong></td>
+          <td>100 rooms × 100 users</td>
+          <td class="danger">30%</td>
+          <td>⚠️ Exceeded capacity</td>
+        </tr>
+      </table>
+
+      <h3>Connection Latency</h3>
+
+      <table>
+        <tr>
+          <th>Scenario</th>
+          <th>Latency</th>
+          <th>Notes</th>
+        </tr>
+        <tr>
+          <td>Normal load</td>
+          <td class="success">~235ms</td>
+          <td>Optimal user experience</td>
+        </tr>
+        <tr>
+          <td>Heavy load (7,000 VUs)</td>
+          <td class="warning">~10-16s</td>
+          <td>Connection queueing under stress</td>
+        </tr>
+        <tr>
+          <td>Peak load</td>
+          <td>~20s p(95)</td>
+          <td>At capacity limits</td>
+        </tr>
+      </table>
+
+      <span class="page-number">8</span>
+    </div>
+
+    <!-- Scaling Recommendations -->
+    <div class="page">
+      <h2>Scaling Recommendations</h2>
+
+      <h3>Current Capacity</h3>
+
+      <div class="highlight-box">
+        <p style="font-size: 1.2rem; margin-bottom: 0">
+          <strong>~7,000 concurrent WebSocket connections</strong> with 99.99% reliability
+        </p>
+      </div>
+
+      <h3>To Scale Beyond 7,000 Connections</h3>
+
+      <div class="timeline">
+        <div class="timeline-item">
+          <h4>1. Increase NGINX Ingress Replicas</h4>
+          <p>Scale from 5 to 10+ replicas. Each NGINX pod handles ~1,400 connections.</p>
+        </div>
+        <div class="timeline-item">
+          <h4>2. Use Larger Node Types</h4>
+          <p>Upgrade from e2-medium to e2-standard-4 or larger for more CPU/memory per node.</p>
+        </div>
+        <div class="timeline-item">
+          <h4>3. Tune NGINX Worker Connections</h4>
+          <p>
+            Increase <code>worker-connections</code> in NGINX ConfigMap (default: 1024 → 65536).
+          </p>
+        </div>
+        <div class="timeline-item">
+          <h4>4. Add More Nodes</h4>
+          <p>Scale node pool from 3 to 5+ nodes for better pod distribution.</p>
+        </div>
+      </div>
+
+      <h3>Estimated Capacity by Configuration</h3>
+
+      <table>
+        <tr>
+          <th>NGINX Replicas</th>
+          <th>App Pods</th>
+          <th>Nodes</th>
+          <th>Estimated Capacity</th>
+        </tr>
+        <tr>
+          <td>5</td>
+          <td>10</td>
+          <td>3× e2-medium</td>
+          <td>~7,000 connections</td>
+        </tr>
+        <tr>
+          <td>10</td>
+          <td>20</td>
+          <td>5× e2-standard-4</td>
+          <td>~15,000 connections</td>
+        </tr>
+        <tr>
+          <td>20</td>
+          <td>40</td>
+          <td>10× e2-standard-4</td>
+          <td>~30,000 connections</td>
+        </tr>
+      </table>
+
+      <span class="page-number">9</span>
+    </div>
+
+    <!-- Monitoring & Observability -->
+    <div class="page">
+      <h2>Monitoring & Observability</h2>
+
+      <h3>Prometheus Metrics</h3>
+
+      <table>
+        <tr>
+          <th>Metric</th>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+        <tr>
+          <td><code>tldraw_active_rooms</code></td>
+          <td>Gauge</td>
+          <td>Rooms currently in memory</td>
+        </tr>
+        <tr>
+          <td><code>tldraw_active_connections</code></td>
+          <td>Gauge</td>
+          <td>Active WebSocket connections</td>
+        </tr>
+        <tr>
+          <td><code>tldraw_handover_requests_total</code></td>
+          <td>Counter</td>
+          <td>Handover requests initiated</td>
+        </tr>
+        <tr>
+          <td><code>tldraw_handover_success_total</code></td>
+          <td>Counter</td>
+          <td>Successful handovers completed</td>
+        </tr>
+        <tr>
+          <td><code>tldraw_handover_timeouts_total</code></td>
+          <td>Counter</td>
+          <td>Handover timeouts (indicates issues)</td>
+        </tr>
+        <tr>
+          <td><code>tldraw_handover_duration_seconds</code></td>
+          <td>Histogram</td>
+          <td>Time from request to lock acquisition</td>
+        </tr>
+      </table>
+
+      <h3>Recommended Alerts</h3>
+
+      <div class="card-grid">
+        <div class="card">
+          <h4>High Handover Timeout Rate</h4>
+          <p>
+            <code
+              >rate(tldraw_handover_timeouts_total[5m]) / rate(tldraw_handover_requests_total[5m]) >
+              0.1</code
+            >
+          </p>
+          <p style="margin-top: 10px; color: var(--danger)">
+            May indicate network issues or pod health problems
+          </p>
+        </div>
+        <div class="card">
+          <h4>Slow Handovers</h4>
+          <p><code>histogram_quantile(0.95, tldraw_handover_duration_seconds_bucket) > 3</code></p>
+          <p style="margin-top: 10px; color: var(--accent)">
+            Handovers taking longer than expected
+          </p>
+        </div>
+      </div>
+
+      <h3>Health Endpoints</h3>
+
+      <table>
+        <tr>
+          <th>Endpoint</th>
+          <th>Purpose</th>
+          <th>Used By</th>
+        </tr>
+        <tr>
+          <td><code>GET /api/health</code></td>
+          <td>Liveness check</td>
+          <td>Kubernetes probes</td>
+        </tr>
+        <tr>
+          <td><code>GET /metrics</code></td>
+          <td>Prometheus metrics</td>
+          <td>Monitoring stack</td>
+        </tr>
+      </table>
+
+      <span class="page-number">10</span>
+    </div>
+
+    <!-- Code Snippets Part 1 -->
+    <div class="page">
+      <h2>Code Reference: Connection Flow</h2>
+
+      <h3>1. WebSocket Upgrade & Keep-Alive</h3>
+      <div class="diagram">
+        <pre style="font-size: 0.8rem">
 // src/index.ts - WebSocket upgrade handling
 server.on("upgrade", (request, socket, head) => {
   const { pathname, searchParams } = new URL(request.url, `http://${request.headers.host}`);
@@ -1074,12 +1149,13 @@ wss.on("connection", (ws, request, roomId, sessionId) => {
   ws.on("close", () => clearInterval(pingInterval));
   roomManager.getOrCreateRoom(roomId, ws, sessionId);
 });
-</pre>
-    </div>
+</pre
+        >
+      </div>
 
-    <h3>2. Redis Lock Acquisition</h3>
-    <div class="diagram">
-<pre style="font-size: 0.8rem;">
+      <h3>2. Redis Lock Acquisition</h3>
+      <div class="diagram">
+        <pre style="font-size: 0.8rem">
 // src/roomManager.ts - Distributed lock with SETNX
 const LOCK_TIMEOUT_SEC = 10;
 const lockKey = `lock:room:${roomId}`;
@@ -1099,19 +1175,20 @@ if (lockAcquired) {
     });
   }, HEARTBEAT_INTERVAL_MS);  // Every 5 seconds
 }
-</pre>
+</pre
+        >
+      </div>
+
+      <span class="page-number">12</span>
     </div>
 
-    <span class="page-number">12</span>
-  </div>
+    <!-- Code Snippets Part 2 -->
+    <div class="page">
+      <h2>Code Reference: Two-Phase Handover</h2>
 
-  <!-- Code Snippets Part 2 -->
-  <div class="page">
-    <h2>Code Reference: Two-Phase Handover</h2>
-    
-    <h3>3. Phase 1: Request & Release Lock</h3>
-    <div class="diagram">
-<pre style="font-size: 0.75rem;">
+      <h3>3. Phase 1: Request & Release Lock</h3>
+      <div class="diagram">
+        <pre style="font-size: 0.75rem">
 // Pod C (new target) - Request handover
 const subscription = await this.subscribeToLockReleased(roomId);
 
@@ -1129,12 +1206,13 @@ await subClient.subscribe("room-handover", async (message) => {
     await this.releaseRoom(request.roomId);
   }
 });
-</pre>
-    </div>
+</pre
+        >
+      </div>
 
-    <h3>4. Phase 2: Ready Signal & Migration</h3>
-    <div class="diagram">
-<pre style="font-size: 0.75rem;">
+      <h3>4. Phase 2: Ready Signal & Migration</h3>
+      <div class="diagram">
+        <pre style="font-size: 0.75rem">
 // Pod A - Release room and wait for ready signal
 async releaseRoom(roomId) {
   // 1. Save state to GCS
@@ -1159,19 +1237,20 @@ const { acquired, shouldSignalReady } = await this.acquireLockWithHandover(roomI
 if (acquired && shouldSignalReady) {
   await pubClient.publish(`handover-ready:${roomId}`, { newOwner: POD_NAME });
 }
-</pre>
+</pre
+        >
+      </div>
+
+      <span class="page-number">13</span>
     </div>
 
-    <span class="page-number">13</span>
-  </div>
+    <!-- Code Snippets Part 3 -->
+    <div class="page">
+      <h2>Code Reference: Persistence & Shutdown</h2>
 
-  <!-- Code Snippets Part 3 -->
-  <div class="page">
-    <h2>Code Reference: Persistence & Shutdown</h2>
-    
-    <h3>5. GCS Persistence (Throttled)</h3>
-    <div class="diagram">
-<pre style="font-size: 0.8rem;">
+      <h3>5. GCS Persistence (Throttled)</h3>
+      <div class="diagram">
+        <pre style="font-size: 0.8rem">
 // src/gcsStorage.ts - Room snapshot persistence
 export async function persistRoomSnapshot(roomId: string, snapshot: RoomSnapshot) {
   const file = bucket.file(`rooms/${roomId}`);
@@ -1195,12 +1274,13 @@ room = new TLSocketRoom({
   initialSnapshot: await fetchRoomSnapshot(roomId),
   onDataChange: () => saveToGCSThrottled(),
 });
-</pre>
-    </div>
+</pre
+        >
+      </div>
 
-    <h3>6. Graceful Shutdown</h3>
-    <div class="diagram">
-<pre style="font-size: 0.8rem;">
+      <h3>6. Graceful Shutdown</h3>
+      <div class="diagram">
+        <pre style="font-size: 0.8rem">
 // src/roomManager.ts - Clean shutdown on SIGTERM
 public async shutdown() {
   console.log(`Shutting down, saving ${this.activeRooms.size} rooms...`);
@@ -1223,74 +1303,83 @@ public async shutdown() {
     pubClient.quit(), handoverSubClient.quit()
   ]);
 }
-</pre>
+</pre
+        >
+      </div>
+
+      <span class="page-number">14</span>
     </div>
 
-    <span class="page-number">14</span>
-  </div>
+    <!-- Summary -->
+    <div class="page">
+      <h2>Summary</h2>
 
-  <!-- Summary -->
-  <div class="page">
-    <h2>Summary</h2>
-    
-    <h3>What We Built</h3>
-    
-    <div class="card-grid">
-      <div class="card highlight">
-        <h4><span class="icon">🏗️</span> Production-Ready Architecture</h4>
-        <p>Horizontally scalable sync backend with stateful room ownership and distributed locking.</p>
-      </div>
-      <div class="card highlight">
-        <h4><span class="icon">🔄</span> Safe Scaling</h4>
-        <p>Two-phase coordinated handover ensures zero user disruption during pod scaling events.</p>
-      </div>
-      <div class="card highlight">
-        <h4><span class="icon">📊</span> Proven Performance</h4>
-        <p>Stress tested to 7,000+ concurrent connections with 99.99% success rate.</p>
-      </div>
-      <div class="card highlight">
-        <h4><span class="icon">☁️</span> GCP Native</h4>
-        <p>Leverages GKE, Cloud Storage, Memorystore, and Workload Identity for secure, managed infrastructure.</p>
-      </div>
-    </div>
-    
-    <h3>Key Differentiators</h3>
-    
-    <ul style="font-size: 1.1rem;">
-      <li><strong>Zero split-brain:</strong> Redis locking guarantees single room ownership</li>
-      <li><strong>Zero data loss:</strong> GCS persistence with throttled snapshots</li>
-      <li><strong>Seamless migration:</strong> Two-phase handover with ready confirmation</li>
-      <li><strong>Connection reliability:</strong> Server-side keep-alive prevents idle timeouts</li>
-    </ul>
-    
-    <h3>Documentation</h3>
-    
-    <table>
-      <tr>
-        <th>Document</th>
-        <th>Description</th>
-      </tr>
-      <tr>
-        <td><code>docs/architecture.md</code></td>
-        <td>Comprehensive technical architecture</td>
-      </tr>
-      <tr>
-        <td><code>docs/coordinated-handover.md</code></td>
-        <td>Two-phase handover protocol details</td>
-      </tr>
-      <tr>
-        <td><code>stress-test/README.md</code></td>
-        <td>Load testing guide and results</td>
-      </tr>
-    </table>
-    
-    <div class="highlight-box" style="margin-top: 40px;">
-      <h4>Questions?</h4>
-      <p style="margin-bottom: 0;">Repository: <code>github.com/tldraw/tldraw-sync-gcp</code></p>
-    </div>
-    
-    <span class="page-number">15</span>
-  </div>
+      <h3>What We Built</h3>
 
-</body>
+      <div class="card-grid">
+        <div class="card highlight">
+          <h4><span class="icon">🏗️</span> Production-Ready Architecture</h4>
+          <p>
+            Horizontally scalable sync backend with stateful room ownership and distributed locking.
+          </p>
+        </div>
+        <div class="card highlight">
+          <h4><span class="icon">🔄</span> Safe Scaling</h4>
+          <p>
+            Two-phase coordinated handover ensures zero user disruption during pod scaling events.
+          </p>
+        </div>
+        <div class="card highlight">
+          <h4><span class="icon">📊</span> Proven Performance</h4>
+          <p>Stress tested to 7,000+ concurrent connections with 99.99% success rate.</p>
+        </div>
+        <div class="card highlight">
+          <h4><span class="icon">☁️</span> GCP Native</h4>
+          <p>
+            Leverages GKE, Cloud Storage, Memorystore, and Workload Identity for secure, managed
+            infrastructure.
+          </p>
+        </div>
+      </div>
+
+      <h3>Key Differentiators</h3>
+
+      <ul style="font-size: 1.1rem">
+        <li><strong>Zero split-brain:</strong> Redis locking guarantees single room ownership</li>
+        <li><strong>Zero data loss:</strong> GCS persistence with throttled snapshots</li>
+        <li><strong>Seamless migration:</strong> Two-phase handover with ready confirmation</li>
+        <li>
+          <strong>Connection reliability:</strong> Server-side keep-alive prevents idle timeouts
+        </li>
+      </ul>
+
+      <h3>Documentation</h3>
+
+      <table>
+        <tr>
+          <th>Document</th>
+          <th>Description</th>
+        </tr>
+        <tr>
+          <td><code>docs/architecture.md</code></td>
+          <td>Comprehensive technical architecture</td>
+        </tr>
+        <tr>
+          <td><code>docs/coordinated-handover.md</code></td>
+          <td>Two-phase handover protocol details</td>
+        </tr>
+        <tr>
+          <td><code>stress-test/README.md</code></td>
+          <td>Load testing guide and results</td>
+        </tr>
+      </table>
+
+      <div class="highlight-box" style="margin-top: 40px">
+        <h4>Questions?</h4>
+        <p style="margin-bottom: 0">Repository: <code>github.com/tldraw/tldraw-sync-gcp</code></p>
+      </div>
+
+      <span class="page-number">15</span>
+    </div>
+  </body>
 </html>

@@ -4,10 +4,9 @@
 
 This module allows the user to create network (vpc and subnets)
 
---- 
+---
 
-
-## Example usage for creating regular vpc 
+## Example usage for creating regular vpc
 
 ```
 module "network" {
@@ -42,7 +41,7 @@ module "network" {
 
 ```
 
-## Example usage for creating shared vpc 
+## Example usage for creating shared vpc
 
 you need to set **enable_shared_vpc** = **true** and add **service_projects** list
 

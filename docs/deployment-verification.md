@@ -54,6 +54,7 @@ wscat -c "wss://gcp-sync.tldraw.xyz/api/connect/handover-test?sessionId=user-2"
 ```
 
 Expected:
+
 - User 1 may see connection close with code 1013 (then auto-reconnect)
 - User 2 connects successfully
 - Both users end up on same room
@@ -77,6 +78,7 @@ curl localhost:3001/metrics | grep tldraw_handover
 ```
 
 Expected output:
+
 ```
 # HELP tldraw_handover_requests_total Total handover requests initiated
 # TYPE tldraw_handover_requests_total counter
@@ -102,6 +104,7 @@ kubectl logs -l app=tldraw-sync -f | grep -E "\[Handover\]|\[Lock\]"
 ```
 
 Expected log sequence during handover:
+
 ```
 [Lock] Room xyz owned by pod-a-xxx, initiating handover...
 [Handover] Received request for room xyz from pod-b-yyy
@@ -134,6 +137,7 @@ kubectl rollout undo deployment/tldraw-sync-deployment --to-revision=2
 Add these alerts in GCP Cloud Monitoring:
 
 ### High Handover Timeout Rate
+
 ```yaml
 Condition: tldraw_handover_timeouts_total / tldraw_handover_requests_total > 0.1
 Duration: 5 minutes
@@ -141,13 +145,15 @@ Severity: Warning
 ```
 
 ### Slow Handovers
+
 ```yaml
 Condition: histogram_quantile(0.95, tldraw_handover_duration_seconds) > 3
-Duration: 5 minutes  
+Duration: 5 minutes
 Severity: Warning
 ```
 
 ### Handover Errors in Logs
+
 ```yaml
 Log filter: resource.type="k8s_container" AND "[Handover] Error"
 Severity: Error
@@ -164,11 +170,11 @@ After deployment, you can demonstrate:
 
 ## Files Changed
 
-| File | Changes |
-|------|---------|
-| `src/roomManager.ts` | Coordinated handover with subscription-before-publish pattern |
-| `src/metrics.ts` | Added 4 handover metrics |
-| `docs/architecture.md` | Updated Known Limitations section |
-| `docs/coordinated-handover.md` | New protocol documentation |
-| `test-handover.js` | New integration test |
-| `docs/deployment-verification.md` | This file |
+| File                              | Changes                                                       |
+| --------------------------------- | ------------------------------------------------------------- |
+| `src/roomManager.ts`              | Coordinated handover with subscription-before-publish pattern |
+| `src/metrics.ts`                  | Added 4 handover metrics                                      |
+| `docs/architecture.md`            | Updated Known Limitations section                             |
+| `docs/coordinated-handover.md`    | New protocol documentation                                    |
+| `test-handover.js`                | New integration test                                          |
+| `docs/deployment-verification.md` | This file                                                     |

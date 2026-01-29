@@ -21,6 +21,7 @@ Without coordination, new connections route to the wrong pod, which cannot acqui
 The handover uses a two-phase commit pattern to ensure users are only disconnected **after** the new owner is ready to serve them:
 
 ### Phase 1: Lock Transfer
+
 1. **Detect conflict**: New pod (Pod C) fails to acquire lock via `SETNX`
 2. **Subscribe first**: Pod C subscribes to `handover-lock-released:{roomId}` channel
 3. **Request handover**: Pod C publishes request to `room-handover` channel
@@ -28,6 +29,7 @@ The handover uses a two-phase commit pattern to ensure users are only disconnect
 5. **Signal lock released**: Pod A publishes to `handover-lock-released:{roomId}`
 
 ### Phase 2: Ready Confirmation
+
 6. **Acquire lock**: Pod C acquires lock after receiving lock-released signal
 7. **Load state**: Pod C loads room state from GCS
 8. **Signal ready**: Pod C publishes to `handover-ready:{roomId}`
@@ -92,62 +94,62 @@ The handover uses a two-phase commit pattern to ensure users are only disconnect
 
 The original single-phase handover had a critical flaw: Pod A would close user connections **before** Pod C was ready. If Pod C crashed or was slow, users would be stuck in retry loops.
 
-| Scenario | Single-Phase | Two-Phase |
-|----------|--------------|-----------|
-| Pod C healthy | Users briefly disconnected | Users disconnected only when ready |
-| Pod C crashes after handover | Users stuck retrying (bad UX) | Same (unavoidable) |
-| Pod C slow to load | Users retry to unready pod | Users stay connected until ready |
+| Scenario                     | Single-Phase                  | Two-Phase                          |
+| ---------------------------- | ----------------------------- | ---------------------------------- |
+| Pod C healthy                | Users briefly disconnected    | Users disconnected only when ready |
+| Pod C crashes after handover | Users stuck retrying (bad UX) | Same (unavoidable)                 |
+| Pod C slow to load           | Users retry to unready pod    | Users stay connected until ready   |
 
 ## Redis Channels
 
-| Channel | Direction | Purpose |
-|---------|-----------|---------|
-| `room-handover` | Pod C → Pod A | Request room release |
-| `handover-lock-released:{roomId}` | Pod A → Pod C | Lock is free, acquire now |
-| `handover-ready:{roomId}` | Pod C → Pod A | Ready to serve, close your sockets |
+| Channel                           | Direction     | Purpose                            |
+| --------------------------------- | ------------- | ---------------------------------- |
+| `room-handover`                   | Pod C → Pod A | Request room release               |
+| `handover-lock-released:{roomId}` | Pod A → Pod C | Lock is free, acquire now          |
+| `handover-ready:{roomId}`         | Pod C → Pod A | Ready to serve, close your sockets |
 
 ## Timeout Handling
 
 Two separate timeouts provide safety:
 
-| Timeout | Duration | Purpose |
-|---------|----------|---------|
-| `HANDOVER_TIMEOUT_MS` | 5s | Pod C waiting for lock-released signal |
-| `HANDOVER_READY_TIMEOUT_MS` | 10s | Pod A waiting for ready signal |
+| Timeout                     | Duration | Purpose                                |
+| --------------------------- | -------- | -------------------------------------- |
+| `HANDOVER_TIMEOUT_MS`       | 5s       | Pod C waiting for lock-released signal |
+| `HANDOVER_READY_TIMEOUT_MS` | 10s      | Pod A waiting for ready signal         |
 
 ### Timeout Scenarios
 
-| Scenario | Behavior |
-|----------|----------|
+| Scenario                       | Behavior                                                            |
+| ------------------------------ | ------------------------------------------------------------------- |
 | Pod A crashes before releasing | Timeout (5s), Pod C attempts SETNX, lock TTL (10s) expires, acquire |
-| Pod C crashes after acquiring | Timeout (10s), Pod A closes sockets, users reconnect elsewhere |
-| Network partition | Both timeout, users retry, system self-heals |
-| Pod C slow to load | Pod A waits up to 10s, then closes sockets anyway |
+| Pod C crashes after acquiring  | Timeout (10s), Pod A closes sockets, users reconnect elsewhere      |
+| Network partition              | Both timeout, users retry, system self-heals                        |
+| Pod C slow to load             | Pod A waits up to 10s, then closes sockets anyway                   |
 
 ```typescript
-const HANDOVER_TIMEOUT_MS = 5000;      // Wait for lock release
-const HANDOVER_READY_TIMEOUT_MS = 10000; // Wait for new owner ready
-const LOCK_TIMEOUT_SEC = 10;            // Redis lock TTL
+const HANDOVER_TIMEOUT_MS = 5000 // Wait for lock release
+const HANDOVER_READY_TIMEOUT_MS = 10000 // Wait for new owner ready
+const LOCK_TIMEOUT_SEC = 10 // Redis lock TTL
 ```
 
 ## Edge Cases
 
-| Scenario | Behavior |
-|----------|----------|
-| Owner crashes mid-handover | Lock-released timeout, attempt acquisition, lock TTL expires |
-| Multiple pods request same room | All wait for lock-released, first to SETNX wins, others retry |
-| Lock expires during wait | Acquisition succeeds immediately |
-| Ready signal lost | Timeout (10s), Pod A closes sockets anyway, users reconnect |
-| Network partition | Timeouts on both sides, users reconnect, eventually consistent |
+| Scenario                        | Behavior                                                       |
+| ------------------------------- | -------------------------------------------------------------- |
+| Owner crashes mid-handover      | Lock-released timeout, attempt acquisition, lock TTL expires   |
+| Multiple pods request same room | All wait for lock-released, first to SETNX wins, others retry  |
+| Lock expires during wait        | Acquisition succeeds immediately                               |
+| Ready signal lost               | Timeout (10s), Pod A closes sockets anyway, users reconnect    |
+| Network partition               | Timeouts on both sides, users reconnect, eventually consistent |
 
 ## Metrics
 
-| Metric | Type | Description |
-|--------|------|-------------|
-| `tldraw_handover_requests_total` | Counter | Handover requests initiated |
-| `tldraw_handover_success_total` | Counter | Handovers completed (lock acquired after handover) |
-| `tldraw_handover_timeouts_total` | Counter | Lock-released timeouts |
-| `tldraw_handover_duration_seconds` | Histogram | Time from request to lock acquisition |
+| Metric                             | Type      | Description                                        |
+| ---------------------------------- | --------- | -------------------------------------------------- |
+| `tldraw_handover_requests_total`   | Counter   | Handover requests initiated                        |
+| `tldraw_handover_success_total`    | Counter   | Handovers completed (lock acquired after handover) |
+| `tldraw_handover_timeouts_total`   | Counter   | Lock-released timeouts                             |
+| `tldraw_handover_duration_seconds` | Histogram | Time from request to lock acquisition              |
 
 ### Alerting Recommendations
 
@@ -172,10 +174,10 @@ const LOCK_TIMEOUT_SEC = 10;            // Redis lock TTL
 Four Redis connections are used to avoid blocking issues:
 
 ```typescript
-const redisClient = createClient();        // Commands (SET, GET, DEL)
-const subClient = redisClient.duplicate(); // room-handover subscription
-const pubClient = redisClient.duplicate(); // Publishing
-const handoverSubClient = redisClient.duplicate(); // Dynamic per-room subscriptions
+const redisClient = createClient() // Commands (SET, GET, DEL)
+const subClient = redisClient.duplicate() // room-handover subscription
+const pubClient = redisClient.duplicate() // Publishing
+const handoverSubClient = redisClient.duplicate() // Dynamic per-room subscriptions
 ```
 
 The separation is necessary because Redis subscriptions put the connection into a special mode where only subscription commands are allowed.
@@ -185,20 +187,21 @@ The separation is necessary because Redis subscriptions put the connection into 
 To prevent GCP Load Balancer idle timeouts (default 30s) from killing WebSocket connections, the server implements server-side ping:
 
 ```typescript
-const PING_INTERVAL_MS = 25000; // 25 seconds, under GCP's 30s timeout
+const PING_INTERVAL_MS = 25000 // 25 seconds, under GCP's 30s timeout
 
 wss.on("connection", (ws) => {
   const pingInterval = setInterval(() => {
     if (ws.readyState === WebSocket.OPEN) {
-      ws.ping();
+      ws.ping()
     }
-  }, PING_INTERVAL_MS);
-  
-  ws.on("close", () => clearInterval(pingInterval));
-});
+  }, PING_INTERVAL_MS)
+
+  ws.on("close", () => clearInterval(pingInterval))
+})
 ```
 
 This is critical for handover reliability:
+
 - Long-running connections stay alive during normal operation
 - Users remain connected while waiting for handover to complete
 - Only code `1013` from the server (after ready signal) triggers reconnection
@@ -216,25 +219,26 @@ node test-handover.js wss://gcp-sync.tldraw.xyz
 ```
 
 The test verifies:
+
 1. First user establishes room ownership
 2. Second user triggers handover coordination
 3. Both users end up connected to the same room
 
 ## Configuration
 
-| Environment Variable | Default | Description |
-|---------------------|---------|-------------|
-| `REDIS_URL` | `redis://localhost:6379` | Redis connection string |
-| `HOSTNAME` | Auto-generated | Pod identifier (set by Kubernetes) |
+| Environment Variable | Default                  | Description                        |
+| -------------------- | ------------------------ | ---------------------------------- |
+| `REDIS_URL`          | `redis://localhost:6379` | Redis connection string            |
+| `HOSTNAME`           | Auto-generated           | Pod identifier (set by Kubernetes) |
 
 ## Comparison with Alternatives
 
-| Approach | Latency | Complexity | Reliability |
-|----------|---------|------------|-------------|
-| **Two-Phase Handover** | +0-10s on conflict | Medium | High |
-| Single-phase handover | +0-5s on conflict | Medium | Medium (UX gap) |
-| Server-side proxy | +1ms always | Medium | Medium (proxy SPOF) |
-| Client retry only | Infinite loop | Low | **Broken** |
+| Approach               | Latency            | Complexity | Reliability         |
+| ---------------------- | ------------------ | ---------- | ------------------- |
+| **Two-Phase Handover** | +0-10s on conflict | Medium     | High                |
+| Single-phase handover  | +0-5s on conflict  | Medium     | Medium (UX gap)     |
+| Server-side proxy      | +1ms always        | Medium     | Medium (proxy SPOF) |
+| Client retry only      | Infinite loop      | Low        | **Broken**          |
 
 ## Implementation Files
 

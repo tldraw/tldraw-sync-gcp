@@ -81,13 +81,13 @@ T2: New User Tries to Join Room "xyz"
 
 ### Impact Analysis
 
-| Scenario | Affected Users | Duration | Severity |
-|----------|----------------|----------|----------|
-| New user joins active room after scale-up | New users only | Until room empties on original pod | **High** |
-| New user joins inactive room | None | N/A | None |
-| Existing users in room | None (WebSocket established) | N/A | None |
-| Scale-down with graceful shutdown | Brief interruption | ~2-5 seconds | Low |
-| Pod crash | Brief interruption | ~10 seconds (lock TTL) | Medium |
+| Scenario                                  | Affected Users               | Duration                           | Severity |
+| ----------------------------------------- | ---------------------------- | ---------------------------------- | -------- |
+| New user joins active room after scale-up | New users only               | Until room empties on original pod | **High** |
+| New user joins inactive room              | None                         | N/A                                | None     |
+| Existing users in room                    | None (WebSocket established) | N/A                                | None     |
+| Scale-down with graceful shutdown         | Brief interruption           | ~2-5 seconds                       | Low      |
+| Pod crash                                 | Brief interruption           | ~10 seconds (lock TTL)             | Medium   |
 
 ### Root Cause
 
@@ -105,17 +105,17 @@ When pods scale, the hash ring changes but Redis locks remain unchanged. There i
 ### Room Lock Acquisition (`src/roomManager.ts`)
 
 ```typescript
-const lockKey = `lock:room:${roomId}`;
+const lockKey = `lock:room:${roomId}`
 const lockAcquired = await redisClient.set(lockKey, "locked", {
-  EX: LOCK_TIMEOUT_SEC,  // 10 seconds
-  NX: true,              // Only if Not eXists
-});
+  EX: LOCK_TIMEOUT_SEC, // 10 seconds
+  NX: true, // Only if Not eXists
+})
 
 if (!lockAcquired) {
   // No information about which pod owns the room
   // No way to redirect or proxy to correct pod
-  safeWs.close(1013, "Room is hosted on another server, please retry.");
-  return;
+  safeWs.close(1013, "Room is hosted on another server, please retry.")
+  return
 }
 ```
 
@@ -169,13 +169,13 @@ if (!lockAcquired) {
 
 ### Solution Components
 
-| Component | Purpose | Status |
-|-----------|---------|--------|
-| NGINX Ingress | External traffic, TLS termination | Existing (no changes) |
-| ClusterIP Service | Load balancing to pods | Existing (no changes) |
-| **Headless Service** | Internal pod-to-pod direct addressing | **New** |
-| **Pod Identity in Locks** | Track which pod owns each room | **New** |
-| **WebSocket Proxying** | Forward connections to correct owner | **New** |
+| Component                 | Purpose                               | Status                |
+| ------------------------- | ------------------------------------- | --------------------- |
+| NGINX Ingress             | External traffic, TLS termination     | Existing (no changes) |
+| ClusterIP Service         | Load balancing to pods                | Existing (no changes) |
+| **Headless Service**      | Internal pod-to-pod direct addressing | **New**               |
+| **Pod Identity in Locks** | Track which pod owns each room        | **New**               |
+| **WebSocket Proxying**    | Forward connections to correct owner  | **New**               |
 
 ### Request Flow
 
@@ -218,17 +218,18 @@ metadata:
   labels:
     app: tldraw-sync
 spec:
-  clusterIP: None  # Headless - enables direct pod DNS
+  clusterIP: None # Headless - enables direct pod DNS
   selector:
     app: tldraw-sync
   ports:
-  - name: http
-    port: 3001
-    targetPort: 3001
-    protocol: TCP
+    - name: http
+      port: 3001
+      targetPort: 3001
+      protocol: TCP
 ```
 
 This enables pods to be addressed directly:
+
 ```
 <pod-name>.tldraw-sync-headless.<namespace>.svc.cluster.local:3001
 ```
@@ -239,19 +240,19 @@ This enables pods to be addressed directly:
 // src/roomManager.ts
 
 // Get pod identity from Kubernetes downward API or hostname
-const POD_NAME = process.env.HOSTNAME || os.hostname();
-const HEADLESS_SERVICE = process.env.HEADLESS_SERVICE || 'tldraw-sync-headless';
-const NAMESPACE = process.env.NAMESPACE || 'default';
+const POD_NAME = process.env.HOSTNAME || os.hostname()
+const HEADLESS_SERVICE = process.env.HEADLESS_SERVICE || "tldraw-sync-headless"
+const NAMESPACE = process.env.NAMESPACE || "default"
 
 function getPodAddress(): string {
-  return `${POD_NAME}.${HEADLESS_SERVICE}.${NAMESPACE}.svc.cluster.local`;
+  return `${POD_NAME}.${HEADLESS_SERVICE}.${NAMESPACE}.svc.cluster.local`
 }
 
 // When acquiring lock, store pod identity
 const lockAcquired = await redisClient.set(lockKey, getPodAddress(), {
   EX: LOCK_TIMEOUT_SEC,
   NX: true,
-});
+})
 ```
 
 ---
@@ -260,40 +261,40 @@ const lockAcquired = await redisClient.set(lockKey, getPodAddress(), {
 
 ### Advantages
 
-| Benefit | Description |
-|---------|-------------|
-| **No client changes** | External interface unchanged |
-| **No NGINX changes** | Can even simplify to round-robin |
-| **Guaranteed correctness** | Redis is single source of truth |
-| **Graceful degradation** | Hash routing still reduces proxy frequency |
-| **Simple implementation** | ~100 lines of new code |
+| Benefit                    | Description                                |
+| -------------------------- | ------------------------------------------ |
+| **No client changes**      | External interface unchanged               |
+| **No NGINX changes**       | Can even simplify to round-robin           |
+| **Guaranteed correctness** | Redis is single source of truth            |
+| **Graceful degradation**   | Hash routing still reduces proxy frequency |
+| **Simple implementation**  | ~100 lines of new code                     |
 
 ### Disadvantages
 
-| Drawback | Mitigation |
-|----------|------------|
+| Drawback                       | Mitigation                                                          |
+| ------------------------------ | ------------------------------------------------------------------- |
 | Extra network hop when proxied | Internal networking is fast (<1ms); only affects initial connection |
-| Proxy pod becomes intermediary | WebSocket is long-lived; overhead is minimal after connection |
-| Additional K8s resource | Single simple manifest |
+| Proxy pod becomes intermediary | WebSocket is long-lived; overhead is minimal after connection       |
+| Additional K8s resource        | Single simple manifest                                              |
 
 ### Performance Characteristics
 
-| Scenario | Latency Impact |
-|----------|----------------|
-| Request routed to correct pod | None |
-| Request proxied to different pod | +0.5-2ms (internal network) |
-| Ongoing WebSocket messages | None (direct connection or stable proxy) |
+| Scenario                         | Latency Impact                           |
+| -------------------------------- | ---------------------------------------- |
+| Request routed to correct pod    | None                                     |
+| Request proxied to different pod | +0.5-2ms (internal network)              |
+| Ongoing WebSocket messages       | None (direct connection or stable proxy) |
 
 ---
 
 ## Alternative Solutions Considered
 
-| Approach | Complexity | Why Not Chosen |
-|----------|------------|----------------|
-| **Client-side redirect** | Medium | Client can't connect to internal K8s DNS; requires exposing pods externally |
-| **Service mesh (Envoy/Istio)** | High | Overkill for this specific problem; adds infrastructure complexity |
-| **Room handoff protocol** | Very High | Complex coordination; race conditions; requires pods to track hash ring state |
-| **Accept limitation** | None | Unacceptable UX; users stuck in retry loops |
+| Approach                       | Complexity | Why Not Chosen                                                                |
+| ------------------------------ | ---------- | ----------------------------------------------------------------------------- |
+| **Client-side redirect**       | Medium     | Client can't connect to internal K8s DNS; requires exposing pods externally   |
+| **Service mesh (Envoy/Istio)** | High       | Overkill for this specific problem; adds infrastructure complexity            |
+| **Room handoff protocol**      | Very High  | Complex coordination; race conditions; requires pods to track hash ring state |
+| **Accept limitation**          | None       | Unacceptable UX; users stuck in retry loops                                   |
 
 ---
 
@@ -309,6 +310,7 @@ const lockAcquired = await redisClient.set(lockKey, getPodAddress(), {
 ## Appendix: Current vs Proposed Lock Behavior
 
 ### Current
+
 ```
 Redis Key: lock:room:xyz
 Value: "locked"
@@ -318,6 +320,7 @@ TTL: 10 seconds
 ```
 
 ### Proposed
+
 ```
 Redis Key: lock:room:xyz
 Value: "pod-abc123.tldraw-sync-headless.default.svc.cluster.local"

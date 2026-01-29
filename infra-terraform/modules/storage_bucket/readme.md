@@ -4,8 +4,7 @@
 
 This module allows the user to create cloud storage buckets
 
---- 
-
+---
 
 ## Example usage
 

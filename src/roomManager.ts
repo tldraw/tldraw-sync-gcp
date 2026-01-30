@@ -17,7 +17,6 @@ import { randomUUID } from "crypto"
 const LOCK_TIMEOUT_SEC = 10
 const THROTTLE_SAVE_MS = 10_000
 const HEARTBEAT_INTERVAL_MS = (LOCK_TIMEOUT_SEC / 2) * 1000
-const SOCKET_CLEANUP_DELAY_MS = 2000
 const HANDOVER_TIMEOUT_MS = 5000
 const HANDOVER_READY_TIMEOUT_MS = 10000
 
@@ -64,7 +63,6 @@ redisClient.on("error", (err) => console.error("[Redis] Client Error:", err))
 subClient.on("error", (err) => console.error("[Redis] Sub Client Error:", err))
 pubClient.on("error", (err) => console.error("[Redis] Pub Client Error:", err))
 handoverSubClient.on("error", (err) => console.error("[Redis] Handover Sub Client Error:", err))
-
 ;(async () => {
   try {
     await Promise.all([
@@ -83,6 +81,7 @@ handoverSubClient.on("error", (err) => console.error("[Redis] Handover Sub Clien
 class RoomManager {
   private activeRooms = new Map<string, TLSocketRoom<TLRecord, void>>()
   private roomHeartbeats = new Map<string, NodeJS.Timeout>()
+  // Track raw WebSockets for handover (need to close with 1013)
   private roomSockets = new Map<string, Set<TldrawWebSocket>>()
 
   private loadingRooms = new Map<string, Promise<TLSocketRoom<TLRecord, void>>>()
@@ -368,49 +367,31 @@ class RoomManager {
     console.log(`[Handover] Published ready signal for room ${roomId}`)
   }
 
-  public async getOrCreateRoom(roomId: string, ws: WebSocket, sessionId: string) {
-    const safeWs = ws as TldrawWebSocket
-    safeWs.sessionId = sessionId
-    safeWs.roomId = roomId
-    safeWs.isAlive = true
-
-    safeWs.on("pong", () => {
-      safeWs.isAlive = true
-    })
-
+  /**
+   * Get or create a room. This is async and should be called BEFORE
+   * accepting the WebSocket connection to avoid race conditions.
+   *
+   * @returns The room and whether this call created it
+   */
+  public async getOrPrepareRoom(
+    roomId: string,
+  ): Promise<{ room: TLSocketRoom<TLRecord, void>; isNewRoom: boolean }> {
+    // 1. Check if room already exists
     let room = this.activeRooms.get(roomId)
     if (room) {
-      const currentSockets = this.roomSockets.get(roomId)?.size ?? 0
-      console.log(
-        `[Room] User ${sessionId} joining existing room ${roomId} (${currentSockets} users already connected)`,
-      )
-      room.handleSocketConnect({ socket: safeWs, sessionId })
-      this.setupSocketCleanup(roomId, safeWs, room)
-      return
+      return { room, isNewRoom: false }
     }
 
-    // 2. Check Pending Loads (Deduplication)
+    // 2. Check if room is currently being loaded (deduplication)
     if (this.loadingRooms.has(roomId)) {
-      try {
-        room = await this.loadingRooms.get(roomId)
-        if (room) {
-          room.handleSocketConnect({ socket: safeWs, sessionId })
-          this.setupSocketCleanup(roomId, safeWs, room)
-        } else {
-          safeWs.close(1011, "Room load failed")
-        }
-        return
-      } catch (err: any) {
-        if (err.message === "LOCK_ACQUISITION_FAILED") {
-          safeWs.close(1013, "Room is being migrated, please retry.")
-        } else {
-          console.error("Error waiting for room load:", err)
-          safeWs.close(1011, "Room load error")
-        }
-        return
+      room = await this.loadingRooms.get(roomId)
+      if (room) {
+        return { room, isNewRoom: false }
       }
+      throw new Error("ROOM_LOAD_FAILED")
     }
 
+    // 3. Create the room
     const loadPromise = (async () => {
       const lockKey = `lock:room:${roomId}`
 
@@ -440,35 +421,51 @@ class RoomManager {
       return newRoom
     })()
 
-    // 4. Store the promise so concurrent requests can wait
+    // Store the promise so concurrent requests can wait
     this.loadingRooms.set(roomId, loadPromise)
 
     try {
       room = await loadPromise
-
-      console.log(`[Room] User ${sessionId} created new room ${roomId}`)
-      room.handleSocketConnect({ socket: safeWs, sessionId })
-
-      this.setupSocketCleanup(roomId, safeWs, room, () => {
-        const heartbeat = this.roomHeartbeats.get(roomId)
-        if (heartbeat) clearInterval(heartbeat)
-        this.roomHeartbeats.delete(roomId)
-        this.activeRooms.delete(roomId)
-        this.roomSockets.delete(roomId)
-        redisClient.del(`lock:room:${roomId}`)
-        activeRoomsGauge.dec()
-      })
-    } catch (err: any) {
-      if (err.message === "LOCK_ACQUISITION_FAILED") {
-        safeWs.close(1013, "Room is being migrated, please retry.")
-      } else {
-        console.error(`[RoomManager] Failed to init room ${roomId}:`, err)
-        safeWs.close(1011, "Internal Error")
-      }
+      return { room, isNewRoom: true }
     } finally {
-      // 5. Cleanup the pending promise
       this.loadingRooms.delete(roomId)
     }
+  }
+
+  /**
+   * Connect a WebSocket to an existing room. This should be called
+   * AFTER the WebSocket is accepted and the room is ready.
+   * This is synchronous - the room must already exist.
+   */
+  public connectSocket(
+    room: TLSocketRoom<TLRecord, void>,
+    roomId: string,
+    ws: WebSocket,
+    sessionId: string,
+    isNewRoom: boolean,
+  ) {
+    const safeWs = ws as TldrawWebSocket
+    safeWs.sessionId = sessionId
+    safeWs.roomId = roomId
+    safeWs.isAlive = true
+
+    safeWs.on("pong", () => {
+      safeWs.isAlive = true
+    })
+
+    const currentSockets = this.roomSockets.get(roomId)?.size ?? 0
+    if (isNewRoom) {
+      console.log(`[Room] User ${sessionId} created new room ${roomId}`)
+    } else {
+      console.log(
+        `[Room] User ${sessionId} joining existing room ${roomId} (${currentSockets} users already connected)`,
+      )
+    }
+
+    room.handleSocketConnect({ socket: safeWs, sessionId })
+
+    // Track raw socket for handover (need to close with 1013)
+    this.trackSocket(roomId, safeWs)
   }
 
   // --- Graceful Shutdown ---
@@ -500,12 +497,11 @@ class RoomManager {
     console.log("[RoomManager] Shutdown complete")
   }
 
-  private setupSocketCleanup(
-    roomId: string,
-    ws: TldrawWebSocket,
-    room: TLSocketRoom<TLRecord, void>,
-    onEmpty?: () => void,
-  ) {
+  /**
+   * Track raw WebSocket for handover purposes (need to close with 1013).
+   * Also notifies the room when socket closes, which triggers onSessionRemoved.
+   */
+  private trackSocket(roomId: string, ws: TldrawWebSocket) {
     if (!this.roomSockets.has(roomId)) {
       this.roomSockets.set(roomId, new Set())
     }
@@ -513,15 +509,11 @@ class RoomManager {
 
     ws.on("close", () => {
       this.roomSockets.get(roomId)?.delete(ws)
-      room.handleSocketClose(ws.sessionId)
-      setTimeout(() => {
-        const socketCount = this.roomSockets.get(roomId)?.size ?? 0
-        console.log(`[Room] Socket closed for ${roomId}, remaining sockets: ${socketCount}`)
-        if (socketCount === 0 && onEmpty) {
-          console.log(`[Room] No sockets remaining, cleaning up room ${roomId}`)
-          onEmpty()
-        }
-      }, SOCKET_CLEANUP_DELAY_MS)
+      // Notify room of socket close - this triggers onSessionRemoved
+      const room = this.activeRooms.get(roomId)
+      if (room) {
+        room.handleSocketClose(ws.sessionId)
+      }
     })
   }
 
@@ -540,8 +532,27 @@ class RoomManager {
       schema,
       initialSnapshot: initialSnapshot || undefined,
       onDataChange: () => saveToGCSThrottled(),
+      onSessionRemoved: (_room, { sessionId, numSessionsRemaining }) => {
+        console.log(
+          `[Room] Session ${sessionId} removed from ${roomId}, ${numSessionsRemaining} remaining`,
+        )
+        if (numSessionsRemaining === 0) {
+          console.log(`[Room] No sessions remaining, cleaning up room ${roomId}`)
+          this.cleanupRoom(roomId)
+        }
+      },
     })
     return room
+  }
+
+  private cleanupRoom(roomId: string) {
+    const heartbeat = this.roomHeartbeats.get(roomId)
+    if (heartbeat) clearInterval(heartbeat)
+    this.roomHeartbeats.delete(roomId)
+    this.activeRooms.delete(roomId)
+    this.roomSockets.delete(roomId)
+    redisClient.del(`lock:room:${roomId}`)
+    activeRoomsGauge.dec()
   }
 }
 

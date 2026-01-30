@@ -55,7 +55,9 @@ app.post("/api/uploads/:uploadId", handleAssetUpload)
 app.get("/api/uploads/:uploadId", handleAssetDownload)
 app.get("/api/unfurl", handleUnfurlRequest)
 
-server.on("upgrade", (request: IncomingMessage, socket, head) => {
+const PING_INTERVAL_MS = 25000
+
+server.on("upgrade", async (request: IncomingMessage, socket, head) => {
   if (!request.url) {
     socket.destroy()
     return
@@ -67,45 +69,49 @@ server.on("upgrade", (request: IncomingMessage, socket, head) => {
   const roomId = roomMatch?.[1]
   const sessionId = searchParams.get("sessionId")
 
-  if (roomMatch && roomId && sessionId) {
+  if (!roomMatch || !roomId || !sessionId) {
+    socket.destroy()
+    return
+  }
+
+  try {
+    // Prepare the room BEFORE accepting the WebSocket connection.
+    // This ensures the room is ready to receive messages immediately.
+    const { room, isNewRoom } = await roomManager.getOrPrepareRoom(roomId)
+
+    // Now accept the WebSocket - the room is ready
     wss.handleUpgrade(request, socket, head, (ws) => {
-      wss.emit("connection", ws, request, roomId, sessionId)
+      activeConnectionsGauge.inc()
+
+      const pingInterval = setInterval(() => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.ping()
+        }
+      }, PING_INTERVAL_MS)
+
+      ws.on("close", () => {
+        clearInterval(pingInterval)
+        activeConnectionsGauge.dec()
+      })
+
+      ws.on("error", () => {
+        clearInterval(pingInterval)
+      })
+
+      // Connect the socket to the room - this is synchronous now
+      roomManager.connectSocket(room, roomId, ws, sessionId, isNewRoom)
     })
-  } else {
+  } catch (err: any) {
+    // Room preparation failed - reject the WebSocket upgrade
+    errorCounter.inc({ type: "websocket_error" })
+
+    if (err.message !== "LOCK_ACQUISITION_FAILED") {
+      console.error(`[WebSocket] Failed to prepare room ${roomId}:`, err)
+    }
+
     socket.destroy()
   }
 })
-
-const PING_INTERVAL_MS = 25000
-
-wss.on(
-  "connection",
-  (ws: WebSocket, request: IncomingMessage, roomId: string, sessionId: string) => {
-    activeConnectionsGauge.inc()
-
-    const pingInterval = setInterval(() => {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.ping()
-      }
-    }, PING_INTERVAL_MS)
-
-    ws.on("close", () => {
-      clearInterval(pingInterval)
-      activeConnectionsGauge.dec()
-    })
-
-    ws.on("error", () => {
-      clearInterval(pingInterval)
-    })
-
-    try {
-      roomManager.getOrCreateRoom(roomId, ws, sessionId)
-    } catch (err) {
-      errorCounter.inc({ type: "websocket_error" })
-      ws.close(1011, "Internal server error")
-    }
-  },
-)
 
 // --- NEW: Graceful Shutdown Implementation ---
 async function handleShutdown(signal: string) {

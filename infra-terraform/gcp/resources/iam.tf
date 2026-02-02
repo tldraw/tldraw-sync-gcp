@@ -22,6 +22,6 @@ module "service-accounts" {
   # authoritative roles granted *on* the service accounts to other identities
   iam = {
     "roles/iam.workloadIdentityUser" = ["serviceAccount:${var.project_id}.svc.id.goog[${each.value["k8s_namespace"]}/${each.key}]"]
-    "roles/iam.serviceAccountTokenCreator" = ["serviceAccount:tldraw-sync-sa@tldraw-sync.iam.gserviceaccount.com"]
+    "roles/iam.serviceAccountTokenCreator" = ["serviceAccount:tldraw-sync-sa@${var.project_id}.iam.gserviceaccount.com"]
   }
 }

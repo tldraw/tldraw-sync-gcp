@@ -31,3 +31,5 @@ override.tf.json
 
 # Stress test reports (generated artifacts)
 stress-test/reports/
+
+tfplan

@@ -2,7 +2,7 @@ module "gcs" {
     source = "../../modules/storage_bucket"
     buckets = [
         {
-            bucket_name                 = "tldraw-sync-room-data"
+            bucket_name                 = "${var.project_id}-room-data"
             storage_location            = var.storage_location
             project_id                  = var.project_id
             storage_class               = "STANDARD"

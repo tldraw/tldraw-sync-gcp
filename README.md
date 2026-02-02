@@ -204,7 +204,24 @@ export function CollaborationRoom() {
 
 ## 🚢 Deployment (GCP)
 
-### Docker Build
+### Manual Deployment to a New GCP Project
+
+For a complete step-by-step guide to deploy from scratch, see:
+
+📖 **[Manual GCP Deployment Guide](docs/manual-gcp-deployment.md)**
+
+This covers:
+
+- GCP project setup and API enablement
+- Terraform infrastructure provisioning
+- GKE cluster configuration
+- NGINX Ingress installation
+- Docker image build and push
+- Kubernetes manifest deployment
+
+---
+
+### Docker Build (Local)
 
 ```bash
 docker build -t tldraw-sync-gcp .
@@ -213,14 +230,16 @@ docker run -p 3001:3001 --env-file .env tldraw-sync-gcp
 
 ---
 
-### GKE Deployment Flow
+### CI/CD Deployment Flow
 
-Typical CI/CD pipeline:
+For existing deployments, the typical CI/CD pipeline:
 
-1. Build Docker image
+1. Build Docker image (with `--platform linux/amd64`)
 2. Push to **Google Artifact Registry**
-3. Deploy to **GKE**
+3. Deploy to **GKE** via `kubectl set image`
 4. Rolling update with zero downtime
+
+See `.github/workflows/deploy.yaml` for the GitHub Actions workflow.
 
 ⚠️ **Important:**  
 Ensure NGINX Ingress is configured with `upstream-hash-by: "$uri"` for consistent room routing. See `kubernetes/ingress.yaml`.

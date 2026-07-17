@@ -173,7 +173,12 @@ This client is intended for **testing, debugging, and reference** — not produc
 
 ## 🔌 Custom Frontend Integration
 
-Example React integration using `@tldraw/sync`.
+For a minimal, fully-commented example that wires up all three integration
+points (sync WebSocket, asset uploads, bookmark unfurling), see:
+
+📖 **[examples/minimal-frontend](examples/minimal-frontend/)**
+
+The gist of it, using `@tldraw/sync`:
 
 ```tsx
 import { useSync } from "@tldraw/sync"

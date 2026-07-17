@@ -347,78 +347,77 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@tldraw/state@npm:4.2.0":
-  version: 4.2.0
-  resolution: "@tldraw/state@npm:4.2.0"
+"@tldraw/state@npm:5.2.5":
+  version: 5.2.5
+  resolution: "@tldraw/state@npm:5.2.5"
   dependencies:
-    "@tldraw/utils": "npm:4.2.0"
-  checksum: 10c0/258018b8ff900f367909c2c027cc45c9f34aafc7b654e2158c56ebf147fee7a1502d9f4aa022fa3a00b7960d4d02919e957bca3cd9e9339feb69858956543a70
+    "@tldraw/utils": "npm:5.2.5"
+  checksum: 10c0/9cd9519a7eeefbb5ebdfbb35c4a35319503e068949837a1591bb4866c195e61718804bf1ca18529f53e9f72938d4467cfac2752d0e1e872af6bc46ef0f6502bb
   languageName: node
   linkType: hard
 
-"@tldraw/store@npm:4.2.0":
-  version: 4.2.0
-  resolution: "@tldraw/store@npm:4.2.0"
+"@tldraw/store@npm:5.2.5":
+  version: 5.2.5
+  resolution: "@tldraw/store@npm:5.2.5"
   dependencies:
-    "@tldraw/state": "npm:4.2.0"
-    "@tldraw/utils": "npm:4.2.0"
+    "@tldraw/state": "npm:5.2.5"
+    "@tldraw/utils": "npm:5.2.5"
   peerDependencies:
-    react: ^18.2.0 || ^19.0.0
-  checksum: 10c0/1b097012d62e2ad7866428d378ac1d948dd57c4fb9d4e18d7001ea1e8cee74873e28e3ad32104954ba223248318d1c0918d8be6fc76b0938eeb0104a2c105680
+    react: ^18.2.0 || ^19.2.1
+  checksum: 10c0/e1c4982865d3c6467cb244b117b13495708636a4392025c913dab4164b18cf8c2d5be48119c6360afd261be6aae6a82bf3911f82df53ae983ad6a4e5f7504308
   languageName: node
   linkType: hard
 
-"@tldraw/sync-core@npm:^4.2.0":
-  version: 4.2.0
-  resolution: "@tldraw/sync-core@npm:4.2.0"
+"@tldraw/sync-core@npm:^5.2.5":
+  version: 5.2.5
+  resolution: "@tldraw/sync-core@npm:5.2.5"
   dependencies:
-    "@tldraw/state": "npm:4.2.0"
-    "@tldraw/store": "npm:4.2.0"
-    "@tldraw/tlschema": "npm:4.2.0"
-    "@tldraw/utils": "npm:4.2.0"
+    "@tldraw/state": "npm:5.2.5"
+    "@tldraw/store": "npm:5.2.5"
+    "@tldraw/tlschema": "npm:5.2.5"
+    "@tldraw/utils": "npm:5.2.5"
     nanoevents: "npm:^7.0.1"
     ws: "npm:^8.18.0"
   peerDependencies:
-    react: ^18.2.0 || ^19.0.0
-    react-dom: ^18.2.0 || ^19.0.0
-  checksum: 10c0/fb495ca6d51c92511117f460d2e85d0dda2da24eeea03675f3bc8f943f3a00c6665b8cd529cff7c173c9d17be931f7ab497c778162a80b03e3985f9f806640fd
+    react: ^18.2.0 || ^19.2.1
+    react-dom: ^18.2.0 || ^19.2.1
+  checksum: 10c0/4073d63e6bfc231e104830937aca39251f526ca76c2a2aadfbebb3f13c49a38fc8e64f64a29247932d1ccc997a6f31062d626f81fa597a8c3164f8feb77fcb7e
   languageName: node
   linkType: hard
 
-"@tldraw/tlschema@npm:4.2.0, @tldraw/tlschema@npm:^4.2.0":
-  version: 4.2.0
-  resolution: "@tldraw/tlschema@npm:4.2.0"
+"@tldraw/tlschema@npm:5.2.5, @tldraw/tlschema@npm:^5.2.5":
+  version: 5.2.5
+  resolution: "@tldraw/tlschema@npm:5.2.5"
   dependencies:
-    "@tldraw/state": "npm:4.2.0"
-    "@tldraw/store": "npm:4.2.0"
-    "@tldraw/utils": "npm:4.2.0"
-    "@tldraw/validate": "npm:4.2.0"
+    "@tldraw/state": "npm:5.2.5"
+    "@tldraw/store": "npm:5.2.5"
+    "@tldraw/utils": "npm:5.2.5"
+    "@tldraw/validate": "npm:5.2.5"
   peerDependencies:
-    react: ^18.2.0 || ^19.0.0
-    react-dom: ^18.2.0 || ^19.0.0
-  checksum: 10c0/3a640665e56a8833235fc6b9c01e3655a1669908ad50d645a3d10b239de5279d515bb6b7b727c33d529489b53849be1c642f9034e492a7c32f515a19a7bdc5aa
+    react: ^18.2.0 || ^19.2.1
+    react-dom: ^18.2.0 || ^19.2.1
+  checksum: 10c0/aaffaee5be6262bf9f47b23552688e7727889c3cc1b123cc103d6aae0c27b841e121976fc0e5983607372ac871b4226f4c7bf939f9c45f77c9a005e5d5a27635
   languageName: node
   linkType: hard
 
-"@tldraw/utils@npm:4.2.0":
-  version: 4.2.0
-  resolution: "@tldraw/utils@npm:4.2.0"
+"@tldraw/utils@npm:5.2.5":
+  version: 5.2.5
+  resolution: "@tldraw/utils@npm:5.2.5"
   dependencies:
-    jittered-fractional-indexing: "npm:^1.0.0"
     lodash.isequal: "npm:^4.5.0"
     lodash.isequalwith: "npm:^4.4.0"
     lodash.throttle: "npm:^4.1.1"
     lodash.uniq: "npm:^4.5.0"
-  checksum: 10c0/397900195ebffda72f1ccc31b7bdc686856b0a4d8ce31e708e0ce8a774898240ff7d08462e5308bba59f1d459bfb84523378d033d6291ac3b0ebb0583796e591
+  checksum: 10c0/f73e96c9c449ea22f29ca7c930ec89a98cd25b7e090d2d7f9ed262d3148ef4dd4437aea0c3eddb10445dc913aecee6ea02664f2edfe1a1b579e4818769239a8b
   languageName: node
   linkType: hard
 
-"@tldraw/validate@npm:4.2.0":
-  version: 4.2.0
-  resolution: "@tldraw/validate@npm:4.2.0"
+"@tldraw/validate@npm:5.2.5":
+  version: 5.2.5
+  resolution: "@tldraw/validate@npm:5.2.5"
   dependencies:
-    "@tldraw/utils": "npm:4.2.0"
-  checksum: 10c0/e26d7299356194761048bd4eec4a4ce608f59da4771bf5b9e05977761ac7bebf7e968ece9cf9a8b96d214e4c8001d8b61fc7a48987415ec0a28f98975d243d5e
+    "@tldraw/utils": "npm:5.2.5"
+  checksum: 10c0/c65f17dbea2c5bafc1e1566067307dcaa0c74e3723cbf3fd46d5a5d0ecccfb8b89afa64b56fc0c7296957c3e34e635b03331494e4e7513f4cd4e432e3c817045
   languageName: node
   linkType: hard
 
@@ -1421,13 +1420,6 @@ __metadata:
   languageName: node
   linkType: hard
 
-"fractional-indexing@npm:^3.2.0":
-  version: 3.2.0
-  resolution: "fractional-indexing@npm:3.2.0"
-  checksum: 10c0/d4d477c2ba369346ef0f03a4776bd78a3426e2778c23f8fd9dd3f51f9a851280bfc412c9bd970de55f1d21b831899f4c7f75f7fb72ae7f92b189eee962564005
-  languageName: node
-  linkType: hard
-
 "fresh@npm:^2.0.0":
   version: 2.0.0
   resolution: "fresh@npm:2.0.0"
@@ -1794,15 +1786,6 @@ __metadata:
   dependencies:
     "@isaacs/cliui": "npm:^8.0.2"
   checksum: 10c0/84ec4f8e21d6514db24737d9caf65361511f75e5e424980eebca4199f400874f45e562ac20fa8aeb1dd20ca2f3f81f0788b6e9c3e64d216a5794fd6f30e0e042
-  languageName: node
-  linkType: hard
-
-"jittered-fractional-indexing@npm:^1.0.0":
-  version: 1.0.0
-  resolution: "jittered-fractional-indexing@npm:1.0.0"
-  dependencies:
-    fractional-indexing: "npm:^3.2.0"
-  checksum: 10c0/e15be3077ae20311cefc7895991e000f88fd262acdaa57446385be100dfb0c78da012cd29a82baa6e7a03d57468e66c3238b67f0a17812e7eb7cb961917d371e
   languageName: node
   linkType: hard
 
@@ -2709,8 +2692,8 @@ __metadata:
   resolution: "tldraw-sync-gcp@workspace:."
   dependencies:
     "@google-cloud/storage": "npm:^7.17.3"
-    "@tldraw/sync-core": "npm:^4.2.0"
-    "@tldraw/tlschema": "npm:^4.2.0"
+    "@tldraw/sync-core": "npm:^5.2.5"
+    "@tldraw/tlschema": "npm:^5.2.5"
     "@types/cors": "npm:^2.8.19"
     "@types/express": "npm:^4.17.21"
     "@types/lodash.throttle": "npm:^4.1.9"

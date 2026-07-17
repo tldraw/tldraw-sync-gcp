@@ -3,7 +3,13 @@ import { RoomSnapshot } from "@tldraw/sync-core"
 import type { Request, Response } from "express"
 import { PassThrough } from "stream"
 
-const storage = new Storage()
+// GCS_API_ENDPOINT points the client at a local emulator (e.g. fake-gcs-server)
+// for development/verification. Leave unset in production.
+// (STORAGE_EMULATOR_HOST is not used: the Node client builds download URLs
+// without the /storage/v1 prefix under that env var, which emulators 404 on.)
+const storage = new Storage(
+  process.env.GCS_API_ENDPOINT ? { apiEndpoint: process.env.GCS_API_ENDPOINT } : undefined,
+)
 
 const BUCKET_NAME = process.env.GCS_BUCKET_NAME
 if (!BUCKET_NAME) {

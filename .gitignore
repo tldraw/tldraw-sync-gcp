@@ -1,8 +1,8 @@
 # Dependencies
-/node_modules
+**/node_modules
 
 # Build artifacts
-/dist
+**/dist
 
 # IDE & OS
 .DS_Store
@@ -30,6 +30,6 @@ override.tf.json
 .yarn
 
 # Stress test reports (generated artifacts)
-stress-test/reports/
+**/stress-test/reports/
 
 tfplan

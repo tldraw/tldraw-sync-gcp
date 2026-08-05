@@ -110,7 +110,7 @@ This document lists all Google Cloud Platform products and services used in this
 
 - `infra-terraform/gcp/resources/artifact-registry.tf`
 - `infra-terraform/modules/artifact_registry/main.tf`
-- `.github/workflows/deploy.yaml`
+- `../.github/workflows/deploy-gcp.yaml`
 
 **Terraform Resource:** `google_artifact_registry_repository`
 
@@ -221,7 +221,7 @@ This document lists all Google Cloud Platform products and services used in this
 
 **Files:**
 
-- `.github/workflows/deploy.yaml`
+- `../.github/workflows/deploy-gcp.yaml`
 
 **GitHub Actions:**
 

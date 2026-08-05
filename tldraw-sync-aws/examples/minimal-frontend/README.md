@@ -1,14 +1,14 @@
 # Minimal frontend example
 
-The smallest possible tldraw frontend wired up to the `tldraw-sync-gcp` backend.
+The smallest possible tldraw frontend wired up to the `tldraw-sync-aws` backend.
 Everything lives in [`src/App.tsx`](src/App.tsx) (~100 lines, mostly comments) and
 shows the three integration points:
 
-| # | What                | Client API                              | Server endpoint              |
-| - | ------------------- | --------------------------------------- | ---------------------------- |
-| 1 | Real-time sync      | `useSync({ uri })`                       | `WS /api/connect/:roomId`    |
-| 2 | Image/video uploads | `TLAssetStore` passed to `useSync`       | `POST/GET /api/uploads/:id`  |
-| 3 | Bookmark previews   | `registerExternalAssetHandler("url", …)` | `GET /api/unfurl?url=…`      |
+| #   | What                | Client API                               | Server endpoint             |
+| --- | ------------------- | ---------------------------------------- | --------------------------- |
+| 1   | Real-time sync      | `useSync({ uri })`                       | `WS /api/connect/:roomId`   |
+| 2   | Image/video uploads | `TLAssetStore` passed to `useSync`       | `POST/GET /api/uploads/:id` |
+| 3   | Bookmark previews   | `registerExternalAssetHandler("url", …)` | `GET /api/unfurl?url=…`     |
 
 ## Run it
 
@@ -18,22 +18,24 @@ Either point at a deployed instance (skip to step 2), or run the full stack
 locally with emulators:
 
 ```sh
-# From the repo root
+# From the tldraw-sync-aws/ directory
 docker run -d --name tldraw-redis -p 6379:6379 redis:7-alpine
-docker run -d --name tldraw-gcs -p 4443:4443 fsouza/fake-gcs-server \
-  -scheme http -port 4443 -public-host localhost:4443 -external-url http://localhost:4443
-curl -X POST "http://localhost:4443/storage/v1/b?project=test" \
-  -H "Content-Type: application/json" -d '{"name":"tldraw-test-bucket"}'
+docker run -d --name tldraw-minio -p 9000:9000 -p 9001:9001 \
+  minio/minio server /data --console-address ":9001"
 
 yarn install && yarn build
+export AWS_ACCESS_KEY_ID=minioadmin AWS_SECRET_ACCESS_KEY=minioadmin
+node -e 'const {S3Client,CreateBucketCommand}=require("@aws-sdk/client-s3");new S3Client({region:"us-east-1",endpoint:"http://localhost:9000",forcePathStyle:true}).send(new CreateBucketCommand({Bucket:"tldraw-test-bucket"}))'
+
 REDIS_URL=redis://localhost:6379 \
-  GCS_BUCKET_NAME=tldraw-test-bucket \
-  GCS_API_ENDPOINT=http://localhost:4443 \
+  S3_BUCKET_NAME=tldraw-test-bucket \
+  S3_ENDPOINT=http://localhost:9000 \
+  AWS_REGION=us-east-1 \
   PORT=3001 node dist/index.js
 ```
 
-> `GCS_API_ENDPOINT` points the GCS client at the emulator — leave it unset in
-> production, where the default credentials + real bucket are used.
+> `S3_ENDPOINT` points the S3 client at MinIO — leave it unset in production,
+> where the real endpoint + IRSA credentials and the real bucket are used.
 
 ### 2. Start the frontend
 
@@ -58,9 +60,9 @@ VITE_PUBLIC_API_URL=https://your-server.example.com npm run dev
 - `useSync` opens a WebSocket to `/api/connect/:roomId` and returns a
   `TLStore` that stays in sync with every other client in the room. The
   server (see `src/roomManager.ts`) uses a Redis lock so exactly one pod owns
-  each room, and persists snapshots to a GCS bucket every 10 seconds.
+  each room, and persists snapshots to an S3 bucket every 10 seconds.
 - Large binary assets never travel over the WebSocket. The `TLAssetStore`
-  uploads them to the server, which streams them into GCS; only the URL is
+  uploads them to the server, which streams them into S3; only the URL is
   stored in the synced document.
 - When a user pastes a URL, the registered `"url"` handler asks the server's
   `/api/unfurl` endpoint for the page's Open Graph metadata to render a rich

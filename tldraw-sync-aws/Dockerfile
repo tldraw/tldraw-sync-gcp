@@ -32,8 +32,7 @@ WORKDIR /app
 COPY package.json yarn.lock .yarnrc.yml ./
 
 # Install ONLY production dependencies to keep image small
-# (We use --production to skip devDependencies)
-RUN yarn workspaces focus --production || yarn install --production
+RUN yarn workspaces focus --production
 
 # Copy the compiled code from the builder stage
 COPY --from=builder /app/dist ./dist

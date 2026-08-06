@@ -5,8 +5,11 @@ on:
     branches:
       - main
     paths:
-      - "tldraw-sync-gcp/**"
-      - ".github/workflows/deploy-gcp.yaml"
+      # Scoped to the GKE target, not to tldraw-sync-gcp/** — the Cloud Run and
+      # Compute Engine targets are siblings, and editing their Terraform must
+      # not roll the cluster.
+      - "tldraw-sync-gcp/tldraw-sync-gke/**"
+      - ".github/workflows/deploy-gke.yaml"
 
 env:
   REGION: europe-west1
@@ -45,7 +48,7 @@ jobs:
 
       - name: Build Docker image
         run: |
-          docker build -t ${{ env.GAR_LOCATION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ github.sha }} tldraw-sync-gcp
+          docker build -t ${{ env.GAR_LOCATION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ github.sha }} tldraw-sync-gcp/tldraw-sync-gke
           docker tag ${{ env.GAR_LOCATION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ github.sha }} \
             ${{ env.GAR_LOCATION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:latest
 
@@ -61,8 +64,8 @@ jobs:
 
       - name: Fix Service Account annotation
         run: |
-          sed -i "s|\${PROJECT_ID}|${{ secrets.GCP_PROJECT_ID }}|g" tldraw-sync-gcp/kubernetes/service-account.yaml
-          kubectl apply -f tldraw-sync-gcp/kubernetes/service-account.yaml -n ${{ env.NAMESPACE }}
+          sed -i "s|\${PROJECT_ID}|${{ secrets.GCP_PROJECT_ID }}|g" tldraw-sync-gcp/tldraw-sync-gke/kubernetes/service-account.yaml
+          kubectl apply -f tldraw-sync-gcp/tldraw-sync-gke/kubernetes/service-account.yaml -n ${{ env.NAMESPACE }}
 
       - name: Update Kubernetes deployment image
         run: |

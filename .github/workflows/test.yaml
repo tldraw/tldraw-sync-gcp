@@ -15,12 +15,17 @@ jobs:
   test:
     runs-on: ubuntu-latest
 
-    # The two demos are deliberate duplicates (see docs/adr/0001), so each is
-    # built and tested on its own rather than through a shared workspace root.
+    # Every deployment target ships its own copy of the server (see
+    # docs/adr/0001 for per-cloud duplication, docs/adr/0003 for per-target), so
+    # each is built and tested on its own rather than through a shared workspace
+    # root. A change to one copy that was not cross-ported to the others will
+    # not fail here — only review catches that.
     strategy:
       fail-fast: false
       matrix:
-        package: [tldraw-sync-aws, tldraw-sync-gcp]
+        package:
+          - tldraw-sync-aws
+          - tldraw-sync-gcp/tldraw-sync-gke
 
     defaults:
       run:

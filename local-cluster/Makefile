@@ -7,7 +7,7 @@ HELM         := helm --kube-context $(KUBE_CONTEXT)
 # overridable from the command line: make deploy-aws IMAGE_TAG=mytag
 IMAGE_TAG    := $(shell date +%Y%m%d%H%M%S)
 
-.PHONY: cluster cluster-down monitoring build-aws deploy-aws build-gcp deploy-gcp
+.PHONY: cluster cluster-down monitoring build-aws deploy-aws build-gcp deploy-gcp verify-aws verify-gcp
 
 cluster: ## Create the k3d cluster with prometheus CRDs and ingress-nginx
 	k3d cluster create --config k3d-config.yaml --wait
@@ -44,3 +44,9 @@ deploy-gcp: build-gcp ## Build, import, and helm-upgrade the GCP demo
 	$(HELM) upgrade --install tldraw-gcp ../tldraw-sync-gcp/chart \
 		--namespace tldraw-gcp --create-namespace \
 		--set image.tag=$(IMAGE_TAG) --wait --timeout 5m
+
+verify-aws: ## E2E sync verification for the AWS demo through the ingress
+	./scripts/verify-aws.sh
+
+verify-gcp: ## E2E sync verification for the GCP demo through the ingress
+	./scripts/verify-gcp.sh

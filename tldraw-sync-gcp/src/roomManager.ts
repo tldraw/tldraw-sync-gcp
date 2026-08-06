@@ -10,6 +10,7 @@ import {
   handoverSuccessCounter,
   handoverTimeoutCounter,
   handoverDurationHistogram,
+  lockLostCounter,
 } from "./metrics.js"
 import { randomUUID } from "crypto"
 
@@ -78,11 +79,57 @@ handoverSubClient.on("error", (err) => console.error("[Redis] Handover Sub Clien
   }
 })()
 
+const lockKey = (roomId: string) => `lock:room:${roomId}`
+
+// Redis has no compare-and-set, so renewing and releasing a Room Lock run as
+// Lua: read the owner and act on it in one atomic step.
+//
+// `SET key POD_NAME EX n XX` is NOT good enough for renewal. XX asserts only
+// that the key exists, not that we still hold it — so if our lease lapses and
+// another pod acquires the Room, an XX renewal overwrites their lock with our
+// name and both pods believe they own the Room. Likewise a bare DEL on release
+// can drop a lock that now belongs to someone else.
+const RENEW_IF_OWNER = `
+  if redis.call('GET', KEYS[1]) == ARGV[1] then
+    return redis.call('PEXPIRE', KEYS[1], ARGV[2])
+  else
+    return 0
+  end`
+
+const RELEASE_IF_OWNER = `
+  if redis.call('GET', KEYS[1]) == ARGV[1] then
+    return redis.call('DEL', KEYS[1])
+  else
+    return 0
+  end`
+
+/** Extends our lease. False means the lock is gone or owned by another pod. */
+async function renewLockIfOwner(roomId: string): Promise<boolean> {
+  const result = await redisClient.eval(RENEW_IF_OWNER, {
+    keys: [lockKey(roomId)],
+    arguments: [POD_NAME, String(LOCK_TIMEOUT_SEC * 1000)],
+  })
+  return result === 1
+}
+
+/** Releases our lease. False means it had already lapsed or been taken over. */
+async function releaseLockIfOwner(roomId: string): Promise<boolean> {
+  const result = await redisClient.eval(RELEASE_IF_OWNER, {
+    keys: [lockKey(roomId)],
+    arguments: [POD_NAME],
+  })
+  return result === 1
+}
+
 class RoomManager {
   private activeRooms = new Map<string, TLSocketRoom<TLRecord, void>>()
   private roomHeartbeats = new Map<string, NodeJS.Timeout>()
   // Track raw WebSockets for handover (need to close with 1013)
   private roomSockets = new Map<string, Set<TldrawWebSocket>>()
+  // Throttled snapshot writers, kept so they can be cancelled the moment we
+  // stop owning a Room — a pending trailing save would otherwise land on top
+  // of the next owner's state.
+  private roomSaves = new Map<string, { cancel: () => void }>()
 
   private loadingRooms = new Map<string, Promise<TLSocketRoom<TLRecord, void>>>()
 
@@ -118,7 +165,6 @@ class RoomManager {
     const room = this.activeRooms.get(roomId)
     if (!room) return
 
-    const lockKey = `lock:room:${roomId}`
     const lockReleasedChannel = `${CHANNEL_LOCK_RELEASED_PREFIX}${roomId}`
     const readyChannel = `${CHANNEL_READY_PREFIX}${roomId}`
     const sockets = this.roomSockets.get(roomId)
@@ -133,14 +179,15 @@ class RoomManager {
         console.log(`[Handover] Saved snapshot for room ${roomId}`)
       }
 
-      const heartbeat = this.roomHeartbeats.get(roomId)
-      if (heartbeat) clearInterval(heartbeat)
-      this.roomHeartbeats.delete(roomId)
-      this.activeRooms.delete(roomId)
-      activeRoomsGauge.dec()
+      this.dropRoom(roomId)
 
-      await redisClient.del(lockKey)
-      console.log(`[Handover] Released lock for room ${roomId}`)
+      if (await releaseLockIfOwner(roomId)) {
+        console.log(`[Handover] Released lock for room ${roomId}`)
+      } else {
+        // Our lease had already lapsed and someone else holds the Room now.
+        // Deleting the key here would drop *their* lock.
+        console.warn(`[Handover] Lock for room ${roomId} was no longer ours to release`)
+      }
 
       const readyWaiter = this.waitForReadySignal(readyChannel)
 
@@ -215,6 +262,55 @@ class RoomManager {
     })
   }
 
+  /**
+   * Extend our claim on a Room, and give the Room up if the claim is gone.
+   *
+   * A renewal only fails when another pod has become the Room Owner, which
+   * means our in-memory copy is no longer authoritative. Persisting it here
+   * would overwrite the new owner's Snapshot, so the Room is dropped without
+   * saving and its Sessions are told to reconnect — they will land on whoever
+   * holds the lock now.
+   */
+  private async renewRoomLock(roomId: string) {
+    let renewed: boolean
+    try {
+      renewed = await renewLockIfOwner(roomId)
+    } catch (err) {
+      // A Redis blip is not evidence that we lost the Room; the lease still has
+      // half its life left, so keep serving and retry on the next tick.
+      console.error(`[Lock] Failed to renew lock for room ${roomId}:`, err)
+      return
+    }
+
+    if (renewed) return
+
+    console.error(`[Lock] Lost lock for room ${roomId} to another pod, giving up the room`)
+    lockLostCounter.inc()
+    this.dropRoom(roomId)
+    this.forceCloseSockets(roomId)
+  }
+
+  /**
+   * Stop owning a Room in memory: cancel its pending Snapshot write, stop its
+   * heartbeat and forget it. Does not touch the Room Lock or its Sessions —
+   * callers decide what those deserve.
+   */
+  private dropRoom(roomId: string): boolean {
+    const wasActive = this.activeRooms.delete(roomId)
+
+    const heartbeat = this.roomHeartbeats.get(roomId)
+    if (heartbeat) clearInterval(heartbeat)
+    this.roomHeartbeats.delete(roomId)
+
+    // A trailing throttled save would otherwise fire seconds from now and put
+    // our stale state on top of the next owner's.
+    this.roomSaves.get(roomId)?.cancel()
+    this.roomSaves.delete(roomId)
+
+    if (wasActive) activeRoomsGauge.dec()
+    return wasActive
+  }
+
   private forceCloseSockets(roomId: string) {
     const sockets = this.roomSockets.get(roomId)
     if (sockets && sockets.size > 0) {
@@ -281,10 +377,9 @@ class RoomManager {
   private async acquireLockWithHandover(
     roomId: string,
   ): Promise<{ acquired: boolean; shouldSignalReady: boolean }> {
-    const lockKey = `lock:room:${roomId}`
     const startTime = Date.now()
 
-    const lockAcquired = await redisClient.set(lockKey, POD_NAME, {
+    const lockAcquired = await redisClient.set(lockKey(roomId), POD_NAME, {
       EX: LOCK_TIMEOUT_SEC,
       NX: true,
     })
@@ -294,7 +389,7 @@ class RoomManager {
       return { acquired: true, shouldSignalReady: false }
     }
 
-    const currentOwner = await redisClient.get(lockKey)
+    const currentOwner = await redisClient.get(lockKey(roomId))
 
     if (currentOwner === POD_NAME) {
       console.log(`[Lock] We already own lock for room ${roomId}`)
@@ -302,7 +397,7 @@ class RoomManager {
     }
 
     if (!currentOwner) {
-      const retryAcquired = await redisClient.set(lockKey, POD_NAME, {
+      const retryAcquired = await redisClient.set(lockKey(roomId), POD_NAME, {
         EX: LOCK_TIMEOUT_SEC,
         NX: true,
       })
@@ -339,7 +434,7 @@ class RoomManager {
       )
     }
 
-    const retryAcquired = await redisClient.set(lockKey, POD_NAME, {
+    const retryAcquired = await redisClient.set(lockKey(roomId), POD_NAME, {
       EX: LOCK_TIMEOUT_SEC,
       NX: true,
     })
@@ -393,8 +488,6 @@ class RoomManager {
 
     // 3. Create the room
     const loadPromise = (async () => {
-      const lockKey = `lock:room:${roomId}`
-
       const { acquired, shouldSignalReady } = await this.acquireLockWithHandover(roomId)
 
       if (!acquired) {
@@ -406,10 +499,7 @@ class RoomManager {
       activeRoomsGauge.inc()
 
       const lockHeartbeat = setInterval(() => {
-        redisClient.set(lockKey, POD_NAME, {
-          EX: LOCK_TIMEOUT_SEC,
-          XX: true,
-        })
+        void this.renewRoomLock(roomId)
       }, HEARTBEAT_INTERVAL_MS)
 
       this.roomHeartbeats.set(roomId, lockHeartbeat)
@@ -471,19 +561,19 @@ class RoomManager {
   // --- Graceful Shutdown ---
   public async shutdown() {
     console.log(`[RoomManager] Shutting down, saving ${this.activeRooms.size} rooms...`)
-    const promises: Promise<void>[] = []
 
-    for (const [roomId, room] of this.activeRooms) {
-      const timer = this.roomHeartbeats.get(roomId)
-      if (timer) clearInterval(timer)
-
+    const rooms = [...this.activeRooms]
+    const promises = rooms.map(async ([roomId, room]) => {
       const snapshot = room.getCurrentSnapshot()
       if (snapshot) {
-        promises.push(persistRoomSnapshot(roomId, snapshot))
+        // The Snapshot must land before the lock goes, or the next owner can
+        // acquire the Room and load a stale Snapshot while our write is still
+        // in flight — and then our write lands on top of theirs.
+        await persistRoomSnapshot(roomId, snapshot)
       }
-      // Release lock immediately so other pods can acquire
-      promises.push(redisClient.del(`lock:room:${roomId}`).then(() => {}))
-    }
+      this.dropRoom(roomId)
+      await releaseLockIfOwner(roomId)
+    })
 
     await Promise.allSettled(promises)
     console.log("[RoomManager] All rooms saved, closing Redis connections...")
@@ -522,11 +612,15 @@ class RoomManager {
     let room: TLSocketRoom<TLRecord, void>
 
     const saveToGCSThrottled = throttle(() => {
-      if (room) {
+      // Only the Room Owner may write; dropRoom() cancels this, but a save
+      // already queued before that can still be in flight.
+      if (room && this.activeRooms.get(roomId) === room) {
         const snapshot = room.getCurrentSnapshot()
         if (snapshot) persistRoomSnapshot(roomId, snapshot)
       }
     }, THROTTLE_SAVE_MS)
+
+    this.roomSaves.set(roomId, saveToGCSThrottled)
 
     room = new TLSocketRoom<TLRecord, void>({
       schema,
@@ -546,13 +640,11 @@ class RoomManager {
   }
 
   private cleanupRoom(roomId: string) {
-    const heartbeat = this.roomHeartbeats.get(roomId)
-    if (heartbeat) clearInterval(heartbeat)
-    this.roomHeartbeats.delete(roomId)
-    this.activeRooms.delete(roomId)
+    this.dropRoom(roomId)
     this.roomSockets.delete(roomId)
-    redisClient.del(`lock:room:${roomId}`)
-    activeRoomsGauge.dec()
+    releaseLockIfOwner(roomId).catch((err) =>
+      console.error(`[Lock] Failed to release lock for room ${roomId}:`, err),
+    )
   }
 }
 

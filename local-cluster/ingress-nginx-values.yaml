@@ -1,0 +1,7 @@
+controller:
+  metrics:
+    enabled: true
+    serviceMonitor:
+      enabled: true
+  # LoadBalancer type is default; k3s svclb binds :80/:443 on nodes,
+  # which the k3d loadbalancer forwards to (see k3d-config.yaml ports).

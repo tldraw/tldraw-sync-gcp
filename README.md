@@ -19,6 +19,8 @@ The two demos share no code — see [`docs/adr/0001-duplicate-per-cloud-demos.md
 
 Each demo runs standalone from its own directory, with a local Redis plus a local object-store emulator (fake-gcs-server for GCP, MinIO for AWS). See [`tldraw-sync-gcp/README.md`](tldraw-sync-gcp/README.md) and [`tldraw-sync-aws/README.md`](tldraw-sync-aws/README.md).
 
+To run **both demos in a local Kubernetes cluster** (k3d + ingress-nginx with production-style consistent-hash routing + Prometheus/Grafana), see [`local-cluster/`](local-cluster/).
+
 ## Repo layout
 
 ```

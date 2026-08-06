@@ -7,7 +7,7 @@ HELM         := helm --kube-context $(KUBE_CONTEXT)
 # overridable from the command line: make deploy-aws IMAGE_TAG=mytag
 IMAGE_TAG    := $(shell date +%Y%m%d%H%M%S)
 
-.PHONY: cluster cluster-down
+.PHONY: cluster cluster-down monitoring
 
 cluster: ## Create the k3d cluster with prometheus CRDs and ingress-nginx
 	k3d cluster create --config k3d-config.yaml --wait
@@ -21,3 +21,8 @@ cluster: ## Create the k3d cluster with prometheus CRDs and ingress-nginx
 
 cluster-down: ## Delete the k3d cluster
 	k3d cluster delete $(CLUSTER_NAME)
+
+monitoring: ## Install Prometheus + Grafana (kube-prometheus-stack)
+	$(HELM) upgrade --install monitoring prometheus-community/kube-prometheus-stack \
+		--namespace monitoring --create-namespace \
+		-f monitoring-values.yaml --wait --timeout 10m

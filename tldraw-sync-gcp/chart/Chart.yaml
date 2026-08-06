@@ -1,0 +1,9 @@
+apiVersion: v2
+name: tldraw-sync-gcp
+description: >
+  tldraw sync backend for GCP (GKE + GCS + Memorystore). With redis.enabled
+  and emulator.enabled (the defaults) it is a self-contained local stack
+  running Redis and fake-gcs-server in-cluster.
+type: application
+version: 0.1.0
+appVersion: "1.0.0"

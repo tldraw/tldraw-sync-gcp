@@ -1,0 +1,35 @@
+replicaCount: 2
+
+image:
+  repository: tldraw-sync-gcp
+  tag: local
+  pullPolicy: IfNotPresent
+
+ingress:
+  enabled: true
+  host: gcp.localhost
+
+env:
+  gcsBucketName: tldraw-test-bucket
+
+# In-cluster Redis for local use. On GKE set enabled: false and url to the
+# Memorystore instance address.
+redis:
+  enabled: true
+  url: ""
+
+# In-cluster fake-gcs-server standing in for GCS. On GKE set enabled: false;
+# Workload Identity (ADC) supplies credentials and no endpoint is set.
+emulator:
+  enabled: true
+
+podMonitor:
+  enabled: true
+
+resources:
+  requests:
+    memory: 256Mi
+    cpu: 250m
+  limits:
+    memory: 512Mi
+    cpu: "1"

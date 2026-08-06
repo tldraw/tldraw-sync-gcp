@@ -1,0 +1,50 @@
+name: Test
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+# A superseded run of the same branch has nothing left to tell us.
+concurrency:
+  group: test-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    # The two demos are deliberate duplicates (see docs/adr/0001), so each is
+    # built and tested on its own rather than through a shared workspace root.
+    strategy:
+      fail-fast: false
+      matrix:
+        package: [tldraw-sync-aws, tldraw-sync-gcp]
+
+    defaults:
+      run:
+        working-directory: ${{ matrix.package }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: yarn
+          cache-dependency-path: ${{ matrix.package }}/yarn.lock
+
+      - name: Install dependencies
+        run: yarn install --immutable
+
+      - name: Typecheck
+        run: yarn typecheck
+
+      - name: Build
+        run: yarn build
+
+      - name: Run tests
+        run: yarn test

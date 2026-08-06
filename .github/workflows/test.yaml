@@ -27,6 +27,7 @@ jobs:
           - tldraw-sync-aws
           - tldraw-sync-gcp/tldraw-sync-gke
           - tldraw-sync-gcp/tldraw-sync-compute-engine
+          - tldraw-sync-gcp/tldraw-sync-cloud-run
 
     defaults:
       run:

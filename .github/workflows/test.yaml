@@ -26,6 +26,7 @@ jobs:
         package:
           - tldraw-sync-aws
           - tldraw-sync-gcp/tldraw-sync-gke
+          - tldraw-sync-gcp/tldraw-sync-compute-engine
 
     defaults:
       run:

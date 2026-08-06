@@ -3261,9 +3261,9 @@ __metadata:
   languageName: node
   linkType: hard
 
-"tldraw-sync-gke@workspace:.":
+"tldraw-sync-compute-engine@workspace:.":
   version: 0.0.0-use.local
-  resolution: "tldraw-sync-gke@workspace:."
+  resolution: "tldraw-sync-compute-engine@workspace:."
   dependencies:
     "@google-cloud/storage": "npm:^7.17.3"
     "@tldraw/sync-core": "npm:^5.2.5"

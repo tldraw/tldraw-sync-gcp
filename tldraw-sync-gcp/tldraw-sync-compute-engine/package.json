@@ -1,8 +1,8 @@
 {
-  "name": "tldraw-sync-gke",
+  "name": "tldraw-sync-compute-engine",
   "private": true,
   "version": "1.0.0",
-  "description": "tldraw sync backend on GKE (ingress-nginx consistent hashing on the request path)",
+  "description": "tldraw sync backend on Compute Engine (Container-Optimized OS VMs behind an nginx routing tier)",
   "type": "module",
   "main": "dist/index.js",
   "scripts": {

@@ -1,20 +1,38 @@
 # Review context for tldraw-sync-cloud
 
-Two reference demos of a tldraw sync backend — `tldraw-sync-aws/` and
-`tldraw-sync-gcp/` — that deploy the same server to different clouds. Read
-`CONTEXT.md` for the domain vocabulary (Room, Session, Snapshot, Room Owner,
-Room Lock, Handover) and use those terms in review comments.
+Reference demos of a tldraw sync backend, deploying the same server to
+different clouds and — on GCP — to different compute services. Read `CONTEXT.md`
+for the domain vocabulary (Room, Session, Snapshot, Room Owner, Room Lock,
+Owner Identity, Handover, Room Affinity, Deployment Target) and use those terms
+in review comments.
+
+There are **four copies of the server**:
+
+```
+tldraw-sync-aws/
+tldraw-sync-gcp/tldraw-sync-gke/
+tldraw-sync-gcp/tldraw-sync-compute-engine/
+tldraw-sync-gcp/tldraw-sync-cloud-run/
+```
 
 ## The duplication is deliberate
 
 `roomManager.ts`, `index.ts`, `metrics.ts` and `unfurl.ts` are intentional
-byte-identical copies across the two demos; the storage module
-(`s3Storage.ts` vs `gcsStorage.ts`) is the only sanctioned difference. See
-`docs/adr/0001-duplicate-per-cloud-demos.md`.
+byte-identical copies across all four; the storage module (`s3Storage.ts` vs
+`gcsStorage.ts`) is the only sanctioned difference anywhere, and the three GCP
+copies have no differences at all. See
+`docs/adr/0001-duplicate-per-cloud-demos.md` and
+`docs/adr/0003-three-gcp-deployment-targets.md`.
 
-Do **not** file "duplicated code, extract a shared package" findings. Do flag
-the opposite: a change to one demo's shared file that was not cross-ported to
-the other, since silent drift is the known cost of this decision.
+Do **not** file "duplicated code, extract a shared package" findings — not
+across clouds, and not across the three GCP deployment targets either. Do flag
+the opposite, which is now a **four-way** check: a change to a shared file in
+one copy that was not cross-ported to the other three. CI builds and tests each
+copy independently and cannot detect this; review is the only thing that can.
+
+A GCP-target-specific difference in `src/` is itself a finding: the whole point
+of ADR 0003 is that the application does not change between targets, so a fork
+there means either a bug or a decision that needs recording.
 
 ## What matters most here
 

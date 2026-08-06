@@ -174,7 +174,9 @@ try {
 } catch (err) {
   console.log(
     "  ℹ️ client C store contents:",
-    c.store.allRecords().map((r) => `${r.typeName}:${r.id}${r.typeName === "shape" ? ` x=${r.x}` : ""}`),
+    c.store
+      .allRecords()
+      .map((r) => `${r.typeName}:${r.id}${r.typeName === "shape" ? ` x=${r.x}` : ""}`),
   )
   throw err
 }

@@ -58,7 +58,7 @@ const roomIndex = Math.floor(vuId / USERS_PER_ROOM) % ROOMS;
 const userIndexInRoom = vuId % USERS_PER_ROOM;
 const roomId = `room-${roomIndex}`;
 const sessionId = `stress-${vuId}-${**ITER}`;
-  const url = `${BASE_URL}/api/connect/${roomId}?sessionId=${sessionId}`;
+const url = `${BASE_URL}/api/connect/${roomId}?sessionId=${sessionId}`;
 
 // First 5 users in each room are "drawers" who send updates
 const isDrawer = userIndexInRoom < 5;

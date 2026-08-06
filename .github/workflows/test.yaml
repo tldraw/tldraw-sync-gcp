@@ -30,12 +30,25 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # Must precede setup-node: its yarn cache probe shells out to
+      # `yarn cache dir`, which the runner's bundled Yarn 1 refuses to answer
+      # for a project pinned to yarn@4 via packageManager.
+      - name: Enable Corepack
+        run: corepack enable
+        working-directory: .
+
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: yarn
           cache-dependency-path: ${{ matrix.package }}/yarn.lock
+
+      # setup-node installs its own Node, which does not inherit the shims
+      # enabled above.
+      - name: Enable Corepack for the installed Node
+        run: corepack enable
+        working-directory: .
 
       - name: Install dependencies
         run: yarn install --immutable

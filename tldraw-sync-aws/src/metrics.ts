@@ -49,6 +49,12 @@ export const handoverTimeoutCounter = new client.Counter({
   registers: [register],
 })
 
+export const lockLostCounter = new client.Counter({
+  name: "tldraw_room_lock_lost_total",
+  help: "Rooms given up because their lock was taken over by another pod",
+  registers: [register],
+})
+
 export const handoverDurationHistogram = new client.Histogram({
   name: "tldraw_handover_duration_seconds",
   help: "Time taken for handover coordination",

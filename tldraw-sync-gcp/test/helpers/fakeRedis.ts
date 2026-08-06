@@ -5,6 +5,7 @@
 
 type Entry = { value: string; expiresAt: number | null }
 type Listener = (message: string, channel: string) => void
+type EvalOptions = { keys: string[]; arguments: string[] }
 
 const store = new Map<string, Entry>()
 const subscribers = new Map<string, Set<Listener>>()
@@ -50,6 +51,26 @@ export function createClient() {
       const existed = liveEntry(key) !== undefined
       store.delete(key)
       return existed ? 1 : 0
+    },
+    // Emulates the two ownership-checked Lua scripts rather than interpreting
+    // Lua: both read the owner and act only if it is us. Anything else throws,
+    // so a new script cannot silently no-op in tests.
+    eval: async (script: string, { keys, arguments: args }: EvalOptions) => {
+      const [key] = keys
+      const [owner, ttlMs] = args
+      const isOwner = liveEntry(key)?.value === owner
+
+      if (script.includes("PEXPIRE")) {
+        if (!isOwner) return 0
+        store.set(key, { value: owner, expiresAt: Date.now() + Number(ttlMs) })
+        return 1
+      }
+      if (script.includes("DEL")) {
+        if (!isOwner) return 0
+        store.delete(key)
+        return 1
+      }
+      throw new Error(`fakeRedis: unrecognised script:\n${script}`)
     },
     subscribe: async (channel: string, listener: Listener) => {
       let set = subscribers.get(channel)

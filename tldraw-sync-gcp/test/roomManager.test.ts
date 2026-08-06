@@ -154,6 +154,87 @@ describe("getOrPrepareRoom", () => {
   })
 })
 
+// The lock is what decides the Room Owner. Renewing or releasing it without
+// proving we still hold it is how two pods end up serving one Room.
+describe("lock ownership", () => {
+  it("does not renew a lock that another pod has taken over", async () => {
+    vi.useFakeTimers()
+    const roomId = nextRoomId()
+    await roomManager.getOrPrepareRoom(roomId)
+
+    // Our lease lapses and another pod legitimately acquires the room.
+    bus.setLock(roomId, "usurper-pod", 600)
+    await vi.advanceTimersByTimeAsync(6_000)
+
+    // A `SET ... XX` heartbeat would have overwritten this with our pod name,
+    // leaving both pods convinced they own the room.
+    expect(bus.getLockOwner(roomId)).toBe("usurper-pod")
+  })
+
+  it("gives up the room and evicts its sessions when the lock is lost", async () => {
+    vi.useFakeTimers()
+    const roomId = nextRoomId()
+    const { room, isNewRoom } = await roomManager.getOrPrepareRoom(roomId)
+    const socket = fakeSocket()
+    roomManager.connectSocket(room, roomId, socket, "session-1", isNewRoom)
+
+    bus.setLock(roomId, "usurper-pod", 600)
+    await vi.advanceTimersByTimeAsync(6_000)
+
+    // Clients are told to reconnect, and land on whoever holds the lock now.
+    expect(socket.closes[0]?.code).toBe(1013)
+    // The stale in-memory copy must not be written over the new owner's state.
+    expect(persistRoomSnapshot).not.toHaveBeenCalled()
+  })
+
+  it("does not write a stale snapshot after losing the lock", async () => {
+    vi.useFakeTimers()
+    const roomId = nextRoomId()
+    const { room } = await roomManager.getOrPrepareRoom(roomId)
+    const fake = room as unknown as FakeRoom
+
+    // The first edit saves immediately (leading edge, while the room is still
+    // ours); the second queues a trailing save 10s out.
+    fake.config.onDataChange()
+    fake.config.onDataChange()
+    const writesWhileOwned = persistRoomSnapshot.mock.calls.length
+
+    // The lock is taken over, and the heartbeat notices 5s in.
+    bus.setLock(roomId, "usurper-pod", 600)
+    await vi.advanceTimersByTimeAsync(6_000)
+
+    // Past the trailing save's deadline: it must have been cancelled, or it
+    // lands on top of everything the new owner has written since.
+    await vi.advanceTimersByTimeAsync(15_000)
+    expect(persistRoomSnapshot).toHaveBeenCalledTimes(writesWhileOwned)
+  })
+
+  it("does not delete another pod's lock when releasing a room", async () => {
+    const roomId = nextRoomId()
+    const { room, isNewRoom } = await roomManager.getOrPrepareRoom(roomId)
+    roomManager.connectSocket(room, roomId, fakeSocket(), "session-1", isNewRoom)
+
+    // Our lease lapsed and another pod took over, but a handover request for
+    // the room we still hold in memory arrives anyway.
+    bus.setLock(roomId, "usurper-pod", 600)
+    bus.publish(CHANNEL_HANDOVER_REQUEST, JSON.stringify({ roomId, targetPodId: "third-pod" }))
+    await vi.waitFor(() => expect(persistRoomSnapshot).toHaveBeenCalled())
+
+    expect(bus.getLockOwner(roomId)).toBe("usurper-pod")
+  })
+
+  it("does not delete another pod's lock when the last session leaves", async () => {
+    const roomId = nextRoomId()
+    const { room, isNewRoom } = await roomManager.getOrPrepareRoom(roomId)
+    const socket = fakeSocket()
+    roomManager.connectSocket(room, roomId, socket, "session-1", isNewRoom)
+
+    bus.setLock(roomId, "usurper-pod", 600)
+    socket.emit("close")
+    await vi.waitFor(() => expect(bus.getLockOwner(roomId)).toBe("usurper-pod"))
+  })
+})
+
 describe("acquiring a room owned by another pod", () => {
   it("requests a handover and takes the room once the lock is released", async () => {
     const roomId = nextRoomId()

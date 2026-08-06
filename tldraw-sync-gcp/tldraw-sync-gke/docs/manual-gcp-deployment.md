@@ -209,7 +209,7 @@ gcloud auth configure-docker europe-west1-docker.pkg.dev
 Build for the correct platform (GKE uses linux/amd64):
 
 ```bash
-cd /path/to/repo/tldraw-sync-gcp
+cd /path/to/repo/tldraw-sync-gcp/tldraw-sync-gke
 
 docker buildx build \
   --platform linux/amd64 \

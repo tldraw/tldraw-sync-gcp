@@ -1,6 +1,6 @@
-# tldraw-sync-gcp Architecture
+# tldraw-sync-gke Architecture
 
-This document provides a comprehensive overview of the tldraw-sync-gcp application structure, implementation details, and design decisions.
+This document provides a comprehensive overview of the tldraw-sync-gke application structure, implementation details, and design decisions.
 
 ## Table of Contents
 
@@ -18,7 +18,7 @@ This document provides a comprehensive overview of the tldraw-sync-gcp applicati
 
 ## Overview
 
-tldraw-sync-gcp is a **horizontally scalable sync backend** for [tldraw](https://tldraw.com), designed to run on Google Kubernetes Engine (GKE). It enables real-time collaboration by synchronizing drawing state across multiple clients via WebSocket connections.
+tldraw-sync-gke is a **horizontally scalable sync backend** for [tldraw](https://tldraw.com), designed to run on Google Kubernetes Engine (GKE). It enables real-time collaboration by synchronizing drawing state across multiple clients via WebSocket connections.
 
 ### Key Technologies
 
@@ -76,7 +76,7 @@ tldraw-sync-gcp is a **horizontally scalable sync backend** for [tldraw](https:/
 ## Project Structure
 
 ```
-tldraw-sync-gcp/
+tldraw-sync-gcp/tldraw-sync-gke/
 ├── src/                        # Backend source code
 │   ├── index.ts                # Application entry point
 │   ├── roomManager.ts          # Room lifecycle & Redis locking
@@ -98,6 +98,11 @@ tldraw-sync-gcp/
 ├── infra-terraform/            # Terraform modules for GCP
 │   ├── gcp/
 │   └── modules/
+│
+├── scripts/                    # Hand-run probes against a deployed target
+│   ├── test-handover.js        # Handover integration check
+│   ├── test-lock.js
+│   └── test-stress.js
 │
 ├── Dockerfile                  # Multi-stage build
 ├── package.json
@@ -331,11 +336,12 @@ When a pod receives a connection for a room owned by another pod, a coordinated 
 **Key behavior**: The client that triggered the handover (by connecting to Pod C) waits during this process. Their WebSocket is only accepted after the room is ready, so they get a working connection on the first attempt. Only Pod A's existing users need to reconnect.
 
 **Redis Channels:**
-| Channel | Direction | Purpose |
-|---------|-----------|---------|
-| `room-handover` | Pod C → Pod A | Request room release |
-| `handover-lock-released:{roomId}` | Pod A → Pod C | Lock is free, acquire now |
-| `handover-ready:{roomId}` | Pod C → Pod A | Ready to serve, close your sockets |
+
+| Channel                           | Direction     | Purpose                            |
+| --------------------------------- | ------------- | ---------------------------------- |
+| `room-handover`                   | Pod C → Pod A | Request room release               |
+| `handover-lock-released:{roomId}` | Pod A → Pod C | Lock is free, acquire now          |
+| `handover-ready:{roomId}`         | Pod C → Pod A | Ready to serve, close your sockets |
 
 See `docs/coordinated-handover.md` for detailed protocol documentation.
 

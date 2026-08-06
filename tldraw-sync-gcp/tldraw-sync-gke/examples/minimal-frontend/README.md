@@ -1,14 +1,14 @@
 # Minimal frontend example
 
-The smallest possible tldraw frontend wired up to the `tldraw-sync-gcp` backend.
+The smallest possible tldraw frontend wired up to the `tldraw-sync-gke` backend.
 Everything lives in [`src/App.tsx`](src/App.tsx) (~100 lines, mostly comments) and
 shows the three integration points:
 
-| # | What                | Client API                              | Server endpoint              |
-| - | ------------------- | --------------------------------------- | ---------------------------- |
-| 1 | Real-time sync      | `useSync({ uri })`                       | `WS /api/connect/:roomId`    |
-| 2 | Image/video uploads | `TLAssetStore` passed to `useSync`       | `POST/GET /api/uploads/:id`  |
-| 3 | Bookmark previews   | `registerExternalAssetHandler("url", …)` | `GET /api/unfurl?url=…`      |
+| #   | What                | Client API                               | Server endpoint             |
+| --- | ------------------- | ---------------------------------------- | --------------------------- |
+| 1   | Real-time sync      | `useSync({ uri })`                       | `WS /api/connect/:roomId`   |
+| 2   | Image/video uploads | `TLAssetStore` passed to `useSync`       | `POST/GET /api/uploads/:id` |
+| 3   | Bookmark previews   | `registerExternalAssetHandler("url", …)` | `GET /api/unfurl?url=…`     |
 
 ## Run it
 
@@ -18,7 +18,7 @@ Either point at a deployed instance (skip to step 2), or run the full stack
 locally with emulators:
 
 ```sh
-# From the tldraw-sync-gcp/ directory
+# From the tldraw-sync-gcp/tldraw-sync-gke/ directory
 docker run -d --name tldraw-redis -p 6379:6379 redis:7-alpine
 docker run -d --name tldraw-gcs -p 4443:4443 fsouza/fake-gcs-server \
   -scheme http -port 4443 -public-host localhost:4443 -external-url http://localhost:4443

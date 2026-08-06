@@ -1,4 +1,4 @@
-# Stress Test for tldraw-sync-gcp
+# Stress Test for tldraw-sync-gke
 
 WebSocket load testing using k6 to simulate high-concurrency scenarios with automatic report generation.
 

@@ -1,8 +1,18 @@
-# tldraw-sync-gcp
+# tldraw-sync-gke
 
-A **production-ready, horizontally scalable sync backend** for [tldraw](https://tldraw.com), designed to run on **Google Cloud Platform (GKE)**.
+A **production-ready, horizontally scalable sync backend** for [tldraw](https://tldraw.com), running on **Google Kubernetes Engine**.
 
-> This is the GCP demo. The AWS demo lives alongside it in [`../tldraw-sync-aws`](../tldraw-sync-aws); see the [repo README](../README.md) for how the two relate. All paths and commands below are relative to this directory.
+> This is the GKE deployment target. Two sibling targets run the same server on
+> other GCP compute: [`../tldraw-sync-cloud-run`](../tldraw-sync-cloud-run) and
+> [`../tldraw-sync-compute-engine`](../tldraw-sync-compute-engine). See
+> [the GCP README](../README.md) for how to choose between them, and the
+> [repo README](../../README.md) for how GCP relates to AWS. All paths and
+> commands below are relative to this directory.
+>
+> This is the only target with **strong Room Affinity**: ingress-nginx
+> consistent-hashes on the request path, which carries the `roomId`, so every
+> Session of a Room lands on its Room Owner and Handovers only happen when the
+> hash ring reshuffles.
 
 This project implements a **Stateful Room Ownership model** to safely support real-time collaboration at scale.
 
@@ -231,8 +241,8 @@ This covers:
 ### Docker Build (Local)
 
 ```bash
-docker build -t tldraw-sync-gcp .
-docker run -p 3001:3001 --env-file .env tldraw-sync-gcp
+docker build -t tldraw-sync-gke .
+docker run -p 3001:3001 --env-file .env tldraw-sync-gke
 ```
 
 ---
@@ -246,7 +256,7 @@ For existing deployments, the typical CI/CD pipeline:
 3. Deploy to **GKE** via `kubectl set image`
 4. Rolling update with zero downtime
 
-See `../.github/workflows/deploy-gcp.yaml` for the GitHub Actions workflow (workflows live at the repo root; it only runs on changes under `tldraw-sync-gcp/`).
+See `../../.github/workflows/deploy-gke.yaml` for the GitHub Actions workflow (workflows live at the repo root; it only runs on changes under `tldraw-sync-gcp/tldraw-sync-gke/`).
 
 ⚠️ **Important:**  
 Ensure NGINX Ingress is configured with `upstream-hash-by: "$uri"` for consistent room routing. See `kubernetes/ingress.yaml`.
@@ -302,7 +312,7 @@ This ensures **zero data loss** during rolling deployments.
 ## 📦 Repository
 
 GitHub:  
-https://github.com/tldraw/tldraw-sync-gcp
+https://github.com/tldraw/tldraw-sync-cloud
 
 ---
 

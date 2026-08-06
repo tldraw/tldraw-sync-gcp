@@ -16,10 +16,10 @@ This document provides steps to deploy and verify the coordinated handover solut
 npx tsc
 
 # 2. Build Docker image
-docker build -t tldraw-sync-gcp:latest .
+docker build -t tldraw-sync-gke:latest .
 
 # 3. Tag and push to Artifact Registry
-docker tag tldraw-sync-gcp:latest europe-west1-docker.pkg.dev/<project-id>/tldraw-sync/tldraw-gcp:v3
+docker tag tldraw-sync-gke:latest europe-west1-docker.pkg.dev/<project-id>/tldraw-sync/tldraw-gcp:v3
 docker push europe-west1-docker.pkg.dev/<project-id>/tldraw-sync/tldraw-gcp:v3
 
 # 4. Update deployment image tag
@@ -62,7 +62,7 @@ Expected:
 ### Test 3: Run Integration Test
 
 ```bash
-node test-handover.js wss://gcp-sync.tldraw.xyz
+node scripts/test-handover.js wss://gcp-sync.tldraw.xyz
 ```
 
 Expected: All tests pass.
@@ -176,5 +176,5 @@ After deployment, you can demonstrate:
 | `src/metrics.ts`                  | Added 4 handover metrics                                      |
 | `docs/architecture.md`            | Updated Known Limitations section                             |
 | `docs/coordinated-handover.md`    | New protocol documentation                                    |
-| `test-handover.js`                | New integration test                                          |
+| `scripts/test-handover.js`        | New integration test                                          |
 | `docs/deployment-verification.md` | This file                                                     |

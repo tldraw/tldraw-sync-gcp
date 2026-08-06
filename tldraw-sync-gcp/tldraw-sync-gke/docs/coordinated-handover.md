@@ -212,10 +212,10 @@ Run the handover integration test:
 
 ```bash
 # Local testing
-node test-handover.js ws://localhost:3001
+node scripts/test-handover.js ws://localhost:3001
 
 # Production testing
-node test-handover.js wss://gcp-sync.tldraw.xyz
+node scripts/test-handover.js wss://gcp-sync.tldraw.xyz
 ```
 
 The test verifies:
@@ -244,7 +244,7 @@ The test verifies:
 
 - `src/roomManager.ts` - Core two-phase handover logic
 - `src/metrics.ts` - Handover metrics
-- `test-handover.js` - Integration test
+- `scripts/test-handover.js` - Integration test
 
 ## Data Safety Guarantees
 

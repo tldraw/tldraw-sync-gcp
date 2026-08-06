@@ -7,7 +7,7 @@ HELM         := helm --kube-context $(KUBE_CONTEXT)
 # overridable from the command line: make deploy-aws IMAGE_TAG=mytag
 IMAGE_TAG    := $(shell date +%Y%m%d%H%M%S)
 
-.PHONY: cluster cluster-down monitoring build-aws deploy-aws build-gcp deploy-gcp verify-aws verify-gcp
+.PHONY: cluster cluster-down monitoring dashboard build-aws deploy-aws build-gcp deploy-gcp verify-aws verify-gcp
 
 cluster: ## Create the k3d cluster with prometheus CRDs and ingress-nginx
 	k3d cluster create --config k3d-config.yaml --wait
@@ -26,6 +26,10 @@ monitoring: ## Install Prometheus + Grafana (kube-prometheus-stack)
 	$(HELM) upgrade --install monitoring prometheus-community/kube-prometheus-stack \
 		--namespace monitoring --create-namespace \
 		-f monitoring-values.yaml --wait --timeout 10m
+	$(KUBECTL) apply -f dashboards/tldraw-scaling-dashboard.yaml
+
+dashboard: ## Install/refresh the Grafana "tldraw scaling" dashboard
+	$(KUBECTL) apply -f dashboards/tldraw-scaling-dashboard.yaml
 
 build-aws: ## Build the AWS demo image and import it into the cluster
 	docker build -t tldraw-sync-aws:$(IMAGE_TAG) ../tldraw-sync-aws

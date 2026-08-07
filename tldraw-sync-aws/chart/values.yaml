@@ -1,0 +1,38 @@
+replicaCount: 2
+
+image:
+  repository: tldraw-sync-aws
+  tag: local
+  pullPolicy: IfNotPresent
+
+ingress:
+  enabled: true
+  host: aws.localhost
+
+env:
+  s3BucketName: tldraw-test-bucket
+  awsRegion: us-east-1
+
+# In-cluster Redis for local use. On EKS set enabled: false and url to the
+# ElastiCache endpoint (rediss:// if TLS).
+redis:
+  enabled: true
+  url: ""
+
+# In-cluster MinIO standing in for S3. On EKS set enabled: false; the AWS SDK
+# default provider chain (IRSA) supplies credentials and no endpoint is set.
+emulator:
+  enabled: true
+  accessKey: minioadmin
+  secretKey: minioadmin
+
+podMonitor:
+  enabled: true
+
+resources:
+  requests:
+    memory: 256Mi
+    cpu: 250m
+  limits:
+    memory: 512Mi
+    cpu: "1"

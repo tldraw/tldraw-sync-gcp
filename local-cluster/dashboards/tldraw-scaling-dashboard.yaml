@@ -1,0 +1,70 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tldraw-scaling-dashboard
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
+data:
+  tldraw-scaling.json: |
+    {
+      "uid": "tldraw-scaling",
+      "title": "tldraw scaling",
+      "schemaVersion": 39,
+      "refresh": "10s",
+      "time": { "from": "now-30m", "to": "now" },
+      "panels": [
+        {
+          "id": 1, "type": "timeseries", "title": "Active rooms per pod",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+          "targets": [
+            { "expr": "tldraw_active_rooms{namespace=~\"tldraw-.*\"}",
+              "legendFormat": "{{namespace}}/{{pod}}" }
+          ]
+        },
+        {
+          "id": 2, "type": "timeseries", "title": "Active connections (Sessions) per pod",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+          "targets": [
+            { "expr": "tldraw_active_connections{namespace=~\"tldraw-.*\"}",
+              "legendFormat": "{{namespace}}/{{pod}}" }
+          ]
+        },
+        {
+          "id": 3, "type": "timeseries", "title": "Handover rate (req / success / timeout)",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+          "targets": [
+            { "expr": "sum by (namespace) (rate(tldraw_handover_requests_total[1m]))",
+              "legendFormat": "{{namespace}} requested" },
+            { "expr": "sum by (namespace) (rate(tldraw_handover_success_total[1m]))",
+              "legendFormat": "{{namespace}} succeeded" },
+            { "expr": "sum by (namespace) (rate(tldraw_handover_timeouts_total[1m]))",
+              "legendFormat": "{{namespace}} timed out" }
+          ]
+        },
+        {
+          "id": 4, "type": "timeseries", "title": "Handover duration p95",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+          "targets": [
+            { "expr": "histogram_quantile(0.95, sum by (namespace, le) (rate(tldraw_handover_duration_seconds_bucket[5m])))",
+              "legendFormat": "{{namespace}} p95" }
+          ]
+        },
+        {
+          "id": 5, "type": "timeseries", "title": "App replicas available",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+          "targets": [
+            { "expr": "kube_deployment_status_replicas_available{deployment=~\"tldraw-(aws|gcp)-app\"}",
+              "legendFormat": "{{namespace}}" }
+          ]
+        },
+        {
+          "id": 6, "type": "timeseries", "title": "Ingress 5xx rate by host",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+          "targets": [
+            { "expr": "sum by (host) (rate(nginx_ingress_controller_requests{status=~\"5..\"}[1m]))",
+              "legendFormat": "{{host}}" }
+          ]
+        }
+      ]
+    }

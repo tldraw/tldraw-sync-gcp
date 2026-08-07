@@ -1,0 +1,9 @@
+apiVersion: v2
+name: tldraw-sync-aws
+description: >
+  tldraw sync backend for AWS (EKS + S3 + ElastiCache). With redis.enabled
+  and emulator.enabled (the defaults) it is a self-contained local stack
+  running Redis and MinIO in-cluster.
+type: application
+version: 0.1.0
+appVersion: "1.0.0"

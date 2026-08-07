@@ -1,0 +1,18 @@
+apiVersion: k3d.io/v1alpha5
+kind: Simple
+metadata:
+  name: tldraw-local
+servers: 1
+agents: 3
+ports:
+  # host 8080 -> k3d loadbalancer :80 -> svclb -> ingress-nginx controller
+  - port: 8080:80
+    nodeFilters:
+      - loadbalancer
+options:
+  k3s:
+    extraArgs:
+      # ingress-nginx replaces the bundled Traefik (parity with GKE/EKS, ADR 0002)
+      - arg: "--disable=traefik"
+        nodeFilters:
+          - server:*

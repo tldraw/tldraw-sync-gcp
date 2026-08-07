@@ -1,0 +1,49 @@
+#cloud-config
+#
+# The routing tier. Container-Optimized OS running stock nginx, with the
+# consistent-hash config baked in as a file rather than pulled from anywhere —
+# the app addresses are known at plan time, so there is nothing to discover at
+# runtime.
+
+write_files:
+  - path: /etc/tldraw/nginx.conf
+    permissions: "0644"
+    owner: root
+    content: |
+      ${indent(6, nginx_conf)}
+
+  - path: /etc/systemd/system/tldraw-nginx.service
+    permissions: "0644"
+    owner: root
+    content: |
+      [Unit]
+      Description=tldraw sync routing tier (nginx, consistent hash on $uri)
+      Wants=gcr-online.target docker.service
+      After=gcr-online.target docker.service
+
+      [Service]
+      Type=simple
+      Restart=always
+      RestartSec=5
+      TimeoutStopSec=45
+
+      ExecStartPre=-/usr/bin/docker rm -f tldraw-nginx
+      ExecStartPre=/usr/bin/docker pull ${nginx_image}
+
+      # Draining matters here: the load balancer stops sending new handshakes
+      # first, then nginx gets 30s to let in-flight Sessions finish rather than
+      # dropping them into a reconnect storm.
+      ExecStart=/usr/bin/docker run --rm --name tldraw-nginx \
+        --network=host \
+        --log-driver=gcplogs \
+        --volume /etc/tldraw/nginx.conf:/etc/nginx/nginx.conf:ro \
+        ${nginx_image}
+
+      ExecStop=/usr/bin/docker stop --time=30 tldraw-nginx
+
+      [Install]
+      WantedBy=multi-user.target
+
+runcmd:
+  - systemctl daemon-reload
+  - systemctl enable --now tldraw-nginx.service

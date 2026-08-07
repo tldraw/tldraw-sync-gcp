@@ -1,0 +1,130 @@
+name: Build and Deploy to GKE
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      # Scoped to the GKE target, not to tldraw-sync-gcp/** — the Cloud Run and
+      # Compute Engine targets are siblings, and editing their Terraform must
+      # not roll the cluster.
+      - "tldraw-sync-gcp/tldraw-sync-gke/**"
+      - ".github/workflows/deploy-gke.yaml"
+
+# Non-sensitive configuration stays here rather than in secrets. Putting it in
+# secrets buys nothing and costs real debuggability: GitHub redacts every
+# occurrence of a secret's value from the logs, so a cluster name held as a
+# secret turns every log line mentioning it into ***.
+env:
+  REGION: europe-west1
+  GAR_LOCATION: europe-west1
+  REPOSITORY: tldraw-sync
+  IMAGE_NAME: tldraw-gcp
+  GKE_CLUSTER: tldraw-sync-cluster
+  DEPLOYMENT_NAME: tldraw-sync-deployment
+  NAMESPACE: default
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Without this, a missing or malformed secret surfaces as an opaque
+      # `invalid_target` from the token exchange, which reads like a Google-side
+      # outage rather than a configuration problem. See
+      # docs/ci-gcp-authentication.md for what each value should be.
+      - name: Check deployment secrets are configured
+        env:
+          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+          GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          GCP_SA_EMAIL: ${{ secrets.GCP_SA_EMAIL }}
+        run: |
+          missing=()
+          [ -n "$GCP_PROJECT_ID" ] || missing+=("GCP_PROJECT_ID")
+          [ -n "$GCP_WORKLOAD_IDENTITY_PROVIDER" ] || missing+=("GCP_WORKLOAD_IDENTITY_PROVIDER")
+          [ -n "$GCP_SA_EMAIL" ] || missing+=("GCP_SA_EMAIL")
+
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error::Missing repository secrets: ${missing[*]}"
+            echo "See docs/ci-gcp-authentication.md for how to create them."
+            exit 1
+          fi
+
+          # The provider must be the full resource path, and the project segment
+          # must be the project NUMBER — using the project ID there is the most
+          # common cause of `invalid_target`, and it is indistinguishable from a
+          # deleted pool in the error message. Assert on it here instead.
+          if [[ ! "$GCP_WORKLOAD_IDENTITY_PROVIDER" =~ ^projects/[0-9]+/locations/global/workloadIdentityPools/[^/]+/providers/[^/]+$ ]]; then
+            echo "::error::GCP_WORKLOAD_IDENTITY_PROVIDER is not a valid provider resource path."
+            echo "Expected:"
+            echo "  projects/PROJECT_NUMBER/locations/global/workloadIdentityPools/POOL/providers/PROVIDER"
+            echo "PROJECT_NUMBER is numeric — the project ID will not work here. Get it with:"
+            echo "  gcloud projects describe PROJECT_ID --format='value(projectNumber)'"
+            echo "See docs/ci-gcp-authentication.md."
+            exit 1
+          fi
+
+          echo "All required secrets are present."
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SA_EMAIL }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      # Proves the federated identity actually resolved before anything slow
+      # runs, and prints which principal is in play — the single most useful
+      # line in this log when a permission is missing further down.
+      - name: Confirm the federated identity
+        run: |
+          gcloud auth list --filter=status:ACTIVE --format='value(account)'
+          gcloud config set project "${{ secrets.GCP_PROJECT_ID }}"
+
+      - name: Configure Docker for Artifact Registry
+        run: |
+          gcloud auth configure-docker ${{ env.GAR_LOCATION }}-docker.pkg.dev
+
+      - name: Build Docker image
+        run: |
+          docker build -t ${{ env.GAR_LOCATION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ github.sha }} tldraw-sync-gcp/tldraw-sync-gke
+          docker tag ${{ env.GAR_LOCATION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ github.sha }} \
+            ${{ env.GAR_LOCATION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:latest
+
+      - name: Push Docker image to Artifact Registry
+        run: |
+          docker push ${{ env.GAR_LOCATION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          docker push ${{ env.GAR_LOCATION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:latest
+
+      - name: Get GKE credentials
+        run: |
+          gcloud components install gke-gcloud-auth-plugin
+          gcloud container clusters get-credentials ${{ env.GKE_CLUSTER }} --region ${{ env.REGION }} --dns-endpoint
+
+      - name: Fix Service Account annotation
+        run: |
+          sed -i "s|\${PROJECT_ID}|${{ secrets.GCP_PROJECT_ID }}|g" tldraw-sync-gcp/tldraw-sync-gke/kubernetes/service-account.yaml
+          kubectl apply -f tldraw-sync-gcp/tldraw-sync-gke/kubernetes/service-account.yaml -n ${{ env.NAMESPACE }}
+
+      - name: Update Kubernetes deployment image
+        run: |
+          kubectl set image deployment/${{ env.DEPLOYMENT_NAME }} \
+            tldraw-sync=${{ env.GAR_LOCATION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ github.sha }} \
+            -n ${{ env.NAMESPACE }}
+
+          # Restart pods to pick up the fixed service account
+          kubectl rollout restart deployment/${{ env.DEPLOYMENT_NAME }} -n ${{ env.NAMESPACE }}
+
+      - name: Verify deployment rollout
+        run: |
+          kubectl rollout status deployment/${{ env.DEPLOYMENT_NAME }} -n ${{ env.NAMESPACE }}

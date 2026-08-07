@@ -12,15 +12,34 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # The duplication is deliberate (docs/adr/0001, docs/adr/0003); silent drift
+  # between the copies is its known cost. The test matrix below cannot catch
+  # that — each copy passes its own tests perfectly well while saying something
+  # different from its siblings — so this job checks the invariant directly.
+  cross-port:
+    name: Copies are in step
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check for drift between the server copies
+        run: .github/scripts/check-cross-port.sh
+
   test:
     runs-on: ubuntu-latest
 
-    # The two demos are deliberate duplicates (see docs/adr/0001), so each is
-    # built and tested on its own rather than through a shared workspace root.
+    # Every deployment target ships its own copy of the server, so each is built
+    # and tested on its own rather than through a shared workspace root. The
+    # cross-port job above is what stops those copies diverging.
     strategy:
       fail-fast: false
       matrix:
-        package: [tldraw-sync-aws, tldraw-sync-gcp]
+        package:
+          - tldraw-sync-aws
+          - tldraw-sync-gcp/tldraw-sync-gke
+          - tldraw-sync-gcp/tldraw-sync-compute-engine
+          - tldraw-sync-gcp/tldraw-sync-cloud-run
 
     defaults:
       run:

@@ -5,7 +5,7 @@ WebSocket load testing using k6 to simulate high-concurrency scenarios with auto
 ## Benchmark Results
 
 > These numbers were measured against the **GCP** deployment of this demo
-> (`../../tldraw-sync-gcp`). The AWS deployment has not been benchmarked yet;
+> (`../../tldraw-sync-gcp/tldraw-sync-gke`). The AWS deployment has not been benchmarked yet;
 > they are reproduced here as the target to beat, not as AWS results.
 
 Tested from within GCP (Cloud Shell) against production infrastructure:

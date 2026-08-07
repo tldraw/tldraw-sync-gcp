@@ -1,0 +1,82 @@
+name: Test
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+# A superseded run of the same branch has nothing left to tell us.
+concurrency:
+  group: test-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # The duplication is deliberate (docs/adr/0001, docs/adr/0003); silent drift
+  # between the copies is its known cost. The test matrix below cannot catch
+  # that — each copy passes its own tests perfectly well while saying something
+  # different from its siblings — so this job checks the invariant directly.
+  cross-port:
+    name: Copies are in step
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check for drift between the server copies
+        run: .github/scripts/check-cross-port.sh
+
+  test:
+    runs-on: ubuntu-latest
+
+    # Every deployment target ships its own copy of the server, so each is built
+    # and tested on its own rather than through a shared workspace root. The
+    # cross-port job above is what stops those copies diverging.
+    strategy:
+      fail-fast: false
+      matrix:
+        package:
+          - tldraw-sync-aws
+          - tldraw-sync-gcp/tldraw-sync-gke
+          - tldraw-sync-gcp/tldraw-sync-compute-engine
+          - tldraw-sync-gcp/tldraw-sync-cloud-run
+
+    defaults:
+      run:
+        working-directory: ${{ matrix.package }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Must precede setup-node: its yarn cache probe shells out to
+      # `yarn cache dir`, which the runner's bundled Yarn 1 refuses to answer
+      # for a project pinned to yarn@4 via packageManager.
+      - name: Enable Corepack
+        run: corepack enable
+        working-directory: .
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: yarn
+          cache-dependency-path: ${{ matrix.package }}/yarn.lock
+
+      # setup-node installs its own Node, which does not inherit the shims
+      # enabled above.
+      - name: Enable Corepack for the installed Node
+        run: corepack enable
+        working-directory: .
+
+      - name: Install dependencies
+        run: yarn install --immutable
+
+      - name: Typecheck
+        run: yarn typecheck
+
+      - name: Build
+        run: yarn build
+
+      - name: Run tests
+        run: yarn test

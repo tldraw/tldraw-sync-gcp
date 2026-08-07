@@ -27,6 +27,10 @@ package-lock.json
 *.ico
 *.pdf
 
+# Frozen presentation artefacts — point-in-time exports, not maintained source.
+# Reformatting them produces a large diff and no benefit.
+tldraw-sync-gcp/tldraw-sync-gke/docs/presentation-tldraw-sync-gcp.html
+
 # Misc
 .git/
 coverage/

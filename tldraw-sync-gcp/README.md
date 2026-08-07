@@ -1,337 +1,110 @@
-# tldraw-sync-gcp
+# tldraw sync on GCP — three deployment targets
 
-A **production-ready, horizontally scalable sync backend** for [tldraw](https://tldraw.com), designed to run on **Google Cloud Platform (GKE)**.
+One server, three ways to run it.
 
-> This is the GCP demo. The AWS demo lives alongside it in [`../tldraw-sync-aws`](../tldraw-sync-aws); see the [repo README](../README.md) for how the two relate. All paths and commands below are relative to this directory.
+| Target                                                       | Compute                  | Room Affinity                              | Status                                                |
+| ------------------------------------------------------------ | ------------------------ | ------------------------------------------ | ----------------------------------------------------- |
+| [`tldraw-sync-gke/`](tldraw-sync-gke/)                       | GKE + ingress-nginx      | **Strong** — consistent hash on `$uri`     | Deployed, benchmarked (~7,000 concurrent connections) |
+| [`tldraw-sync-compute-engine/`](tldraw-sync-compute-engine/) | COS VMs + own nginx tier | **Strong** — same mechanism, your own tier | Terraform written, not yet deployed                   |
+| [`tldraw-sync-cloud-run/`](tldraw-sync-cloud-run/)           | Cloud Run                | **None** — single instance by necessity    | Terraform written, not yet deployed                   |
 
-This project implements a **Stateful Room Ownership model** to safely support real-time collaboration at scale.
+All three run **the same server**, and each directory holds its own complete
+copy of it. Nothing in the application changes between targets: `PORT` comes
+from the environment, the listener binds all interfaces, GCS uses Application
+Default Credentials, and the container image is identical. What differs is
+packaging, infrastructure, and what the platform can and cannot do for you.
 
----
+Why copies rather than one shared package:
+[`../docs/adr/0003-three-gcp-deployment-targets.md`](../docs/adr/0003-three-gcp-deployment-targets.md).
 
-## ✨ Key Features
+## The variable that matters: Room Affinity
 
-- 🧠 **Stateful Room Architecture**
-  - Each room is owned by a single pod at any given time.
-  - Prevents split-brain and data corruption.
+A Room is one live in-memory document, so exactly one instance may own it at a
+time. Ownership is a **Room Lock** in Redis. **Room Affinity** is the separate,
+weaker property that routing sends every Session of a Room to that Room's owner
+— it does not establish ownership, it only decides how often you pay for a
+**Handover**.
 
-- 🔐 **Redis Distributed Locking**
-  - Guarantees exclusive room ownership across pods.
-  - Auto-renewed locks with safe expiration handling.
+It has to be a function of the `roomId`. The GKE target gets that from
+ingress-nginx:
 
-- 🔄 **Two-Phase Coordinated Handover**
-  - Safe room migration during scaling events.
-  - Users disconnected only after new pod is ready.
-  - Zero data loss during pod transitions.
-
-- ☁️ **Google Cloud Storage Persistence**
-  - Room snapshots and assets are persisted to GCS.
-  - Ensures durability across pod restarts and deployments.
-
-- 🔌 **WebSocket-based Sync**
-  - Powered by `@tldraw/sync-core`.
-  - Low-latency real-time collaboration.
-  - Server-side keep-alive to prevent idle timeouts.
-
-- ♻️ **Graceful Shutdown**
-  - Active rooms are force-saved on shutdown.
-  - Redis locks are released immediately to allow fast reconnection.
-
-- 🐳 **Container & GKE Ready**
-  - Designed for Docker, GKE, and CI/CD pipelines.
-
----
-
-## 🧱 Architecture Overview
-
-```text
-tldraw-client (Example App)
-        |
-        | WebSocket
-        v
-GCP Network Load Balancer
-        |
-        v
-NGINX Ingress Controller (Consistent Hashing by URI)
-        |
-        v
-GKE Pods (Node.js)
-        |
-        | Redis Lock (room ownership)
-        | Redis Pub/Sub (handover coordination)
-        v
-Redis
-        |
-        | Snapshots / Assets
-        v
-Google Cloud Storage
+```yaml
+nginx.ingress.kubernetes.io/upstream-hash-by: "$uri"
 ```
 
-**Key**: NGINX uses `upstream-hash-by: "$uri"` to route requests for the same room to the same pod. When pods scale, a coordinated handover protocol ensures safe room migration.
+`$uri` is `/api/connect/<roomId>`, and a client cannot fail to send it.
 
----
+**Google Cloud Load Balancing cannot do this.** Its affinity options hash a
+header or a cookie, never the request path. Each target answers that differently,
+and the answers are what make them worth comparing:
 
-## 🚀 Getting Started
+- **Compute Engine** runs its own nginx tier and hashes `$uri` exactly as GKE
+  does. No client change, no cookie, no same-origin constraint. The price is a
+  fixed-size app tier, because consistent hashing needs a static upstream list.
+- **Cloud Run** cannot have it at all. Its session affinity is keyed on the
+  _client_, and it exposes no per-instance addressing, so nginx cannot help
+  either — it would have exactly one upstream. Above one instance a Room
+  **livelocks**: each reconnect lands on a non-owner, forces a Handover, evicts
+  everyone, and they reconnect straight back. So that target ships pinned to one
+  instance, with the mechanism written out in its README.
 
-### 1. Prerequisites
+The full reasoning, including the alternatives rejected, is in
+[`../docs/adr/0004-room-affinity-per-deployment-target.md`](../docs/adr/0004-room-affinity-per-deployment-target.md).
 
-- Node.js **v20+**
-- Yarn **v4.11.0+**
-- Redis (local or Docker)
-- Google Cloud Storage bucket
-- `gcloud` CLI (recommended)
+## Choosing between them
 
----
+|                | **GKE**                                   | **Compute Engine**                            | **Cloud Run**                 |
+| -------------- | ----------------------------------------- | --------------------------------------------- | ----------------------------- |
+| Room Affinity  | strong, server-side                       | strong, server-side                           | none                          |
+| Shutdown grace | configurable (30s default)                | **~90s** — the most generous                  | **fixed 10s**, no knob        |
+| Autoscaling    | HPA on CPU                                | none by design; resize and re-apply           | platform-managed, capped at 1 |
+| TLS + domain   | your own cert and ingress config          | domain **required** for a managed cert        | **free** — `*.run.app`        |
+| Cold start     | low, image cached on the node             | highest — boot plus `docker pull`             | lowest, with a warm instance  |
+| Ops burden     | highest — cluster plus ingress controller | medium                                        | lowest                        |
+| Verdict        | the reference implementation              | best operational properties for this workload | honest anti-example           |
 
-### 2. Environment Setup
+A note on autoscaling: the GKE target's HPA scales on CPU, which is the wrong
+signal for a WebSocket fan-out server — idle Sessions cost almost no CPU, so you
+hit connection limits long before a CPU threshold. Neither new target inherits
+that mistake.
+
+## Layout
+
+```
+tldraw-sync-gcp/
+├── tldraw-sync-gke/             # server + kubernetes/ + infra-terraform/ + docs/
+├── tldraw-sync-compute-engine/  # server + infra-terraform/ (nginx tier, COS VMs)
+└── tldraw-sync-cloud-run/       # server + infra-terraform/ (Cloud Run service)
+```
+
+Each target contains `src/`, `test/`, `Dockerfile`, `tldraw-client/`,
+`examples/minimal-frontend/`, `stress-test/` and `scripts/`, so it stands alone.
+
+## Running one locally
+
+The server does not know which target it is in, so this is the same everywhere:
 
 ```bash
+cd tldraw-sync-gke        # or either sibling
 cp .env.example .env
-```
-
-#### Required Environment Variables
-
-```env
-# Server
-PORT=3001
-NODE_ENV=development
-
-# Redis (Room Locking)
-REDIS_URL=redis://localhost:6379
-
-# Google Cloud Storage
-GCS_BUCKET_NAME=your-tldraw-bucket-name
-
-# Optional (local dev only)
-GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
-```
-
----
-
-### 3. Running the Backend Locally
-
-#### Install Dependencies
-
-```bash
+docker run -d -p 6379:6379 redis
 yarn install
-```
-
-#### Start Redis
-
-```bash
-docker run --name tldraw-redis -p 6379:6379 -d redis
-```
-
-#### Start the Backend Server
-
-```bash
 yarn dev
 ```
 
-Backend will be available at:
-
-```
-http://localhost:3001
-```
-
----
-
-## 🧪 Example Client: `tldraw-client`
-
-This repository includes a **fully working example frontend** located in:
-
-```
-/tldraw-client
-```
-
-The client demonstrates **real-world integration** with this sync backend using
-`@tldraw/sync` and can be used to quickly validate your setup.
-
-### Running the Example Client
-
-> ⚠️ Ensure the backend server is already running before starting the client.
-
-```bash
-cd tldraw-client
-npm install
-npm run dev
-```
-
-The client will start (usually on):
-
-```
-http://localhost:5173
-```
-
-### What This Client Demonstrates
-
-- WebSocket connection to `/api/connect/:roomId`
-- Automatic reconnect handling
-- Real-time multi-user collaboration
-- Compatibility with Redis room locking & GCS persistence
-
-This client is intended for **testing, debugging, and reference** — not production deployment.
-
----
-
-## 🔌 Custom Frontend Integration
-
-For a minimal, fully-commented example that wires up all three integration
-points (sync WebSocket, asset uploads, bookmark unfurling), see:
-
-📖 **[examples/minimal-frontend](examples/minimal-frontend/)**
-
-The gist of it, using `@tldraw/sync`:
-
-```tsx
-import { useSync } from "@tldraw/sync"
-import { Tldraw } from "tldraw"
-
-const roomId = "room-123"
-
-const WORKER_URL = import.meta.env.PROD
-  ? "https://your-gcp-loadbalancer.com"
-  : "http://localhost:3001"
-
-export function CollaborationRoom() {
-  const wsUri = `${WORKER_URL.replace("http", "ws")}/api/connect/${roomId}`
-
-  const store = useSync({
-    uri: wsUri,
-  })
-
-  return (
-    <div style={{ position: "fixed", inset: 0 }}>
-      <Tldraw store={store} />
-    </div>
-  )
-}
-```
-
----
-
-## 🚢 Deployment (GCP)
-
-### Manual Deployment to a New GCP Project
-
-For a complete step-by-step guide to deploy from scratch, see:
-
-📖 **[Manual GCP Deployment Guide](docs/manual-gcp-deployment.md)**
-
-This covers:
-
-- GCP project setup and API enablement
-- Terraform infrastructure provisioning
-- GKE cluster configuration
-- NGINX Ingress installation
-- Docker image build and push
-- Kubernetes manifest deployment
-
----
-
-### Docker Build (Local)
-
-```bash
-docker build -t tldraw-sync-gcp .
-docker run -p 3001:3001 --env-file .env tldraw-sync-gcp
-```
-
----
-
-### CI/CD Deployment Flow
-
-For existing deployments, the typical CI/CD pipeline:
-
-1. Build Docker image (with `--platform linux/amd64`)
-2. Push to **Google Artifact Registry**
-3. Deploy to **GKE** via `kubectl set image`
-4. Rolling update with zero downtime
-
-See `../.github/workflows/deploy-gcp.yaml` for the GitHub Actions workflow (workflows live at the repo root; it only runs on changes under `tldraw-sync-gcp/`).
-
-⚠️ **Important:**  
-Ensure NGINX Ingress is configured with `upstream-hash-by: "$uri"` for consistent room routing. See `kubernetes/ingress.yaml`.
-
----
-
-## 🛠 Troubleshooting
-
-### Common Errors
-
-| Code     | Meaning         | Cause                                           | Resolution                                                     |
-| -------- | --------------- | ----------------------------------------------- | -------------------------------------------------------------- |
-| **1013** | Try Again Later | Room migration in progress (two-phase handover) | Client auto-retries. Normal during scaling events.             |
-| **1011** | Internal Error  | Redis or GCS unreachable                        | Verify env variables                                           |
-| **1005** | Idle Timeout    | Connection idle too long                        | Server keep-alive should prevent this. Check PING_INTERVAL_MS. |
-| **503**  | Unavailable     | Pod shutting down or overloaded                 | Client will reconnect                                          |
-
----
-
-## ❤️ Health Check
-
-```http
-GET /api/health
-200 OK
-```
-
-Used by GCP Load Balancers and Kubernetes probes.
-
----
-
-## 🔐 Room Locking Details
-
-- Lock Key: `lock:room:{roomId}`
-- TTL: **10 seconds**
-- Renew Interval: **5 seconds**
-- Locks are released immediately on shutdown
-
----
-
-## 🧯 Graceful Shutdown Flow
-
-On `SIGTERM`:
-
-1. Stop accepting new connections
-2. Save all active rooms to GCS
-3. Release Redis locks
-4. Exit process cleanly
-
-This ensures **zero data loss** during rolling deployments.
-
----
-
-## 📦 Repository
-
-GitHub:  
-https://github.com/tldraw/tldraw-sync-gcp
-
----
-
-## 📊 Performance & Capacity
-
-Tested with k6 stress tests from within GCP:
-
-| Concurrent Users | Rooms × Users | Success Rate             |
-| ---------------- | ------------- | ------------------------ |
-| 5,000            | 50 × 100      | **100%**                 |
-| 7,000            | 100 × 70      | **99.99%**               |
-| 10,000           | 100 × 100     | ~30% (exceeded capacity) |
-
-**Tested infrastructure**: 5 NGINX Ingress replicas, 10 app pods, 3× e2-medium nodes
-
-**Connection latency**: ~235ms (normal load), ~10-20s (under heavy load)
-
-See `stress-test/README.md` for running your own benchmarks.
-
----
-
-## 🧠 Notes
-
-- Smart autoscaling and empty-room draining are intentionally **not implemented**
-- This design favors **correctness and safety over aggressive scaling**
-- Ideal for production collaborative environments
-
----
-
-## 📄 License
-
-MIT
+[`tldraw-sync-gke/README.md`](tldraw-sync-gke/README.md) has the full local
+setup, including the GCS emulator and the example client.
+
+## Sharing one substrate
+
+Each target provisions its own VPC, Memorystore instance, GCS bucket and
+Artifact Registry repository by default, so it deploys end-to-end from a single
+apply. Memorystore is the dominant line item, so running all three that way
+means paying for it three times. Every target takes `create_substrate = false`
+plus `existing_*` variables to attach to a substrate that already exists.
+
+Doing that unlocks the clearest demonstration here: point two targets at one
+Redis and open the same room against both. The second connection triggers a
+**Handover across deployment targets** — a GKE pod hands the Room to a COS VM,
+live, because Room Ownership is a property of the Room Lock and not of the
+platform.

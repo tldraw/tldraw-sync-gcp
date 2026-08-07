@@ -1,0 +1,72 @@
+#cloud-config
+#
+# Runs the sync server on Container-Optimized OS.
+#
+# NOT gce-container-declaration. The container startup agent (konlet) and
+# `gcloud compute instances create-with-container` were shut down for new VMs
+# and MIGs on 2026-07-31; Google's documented replacement is a startup script or
+# cloud-init, which is what this is. COS reads cloud-init from the `user-data`
+# metadata key.
+
+write_files:
+  - path: /etc/systemd/system/tldraw-sync.service
+    permissions: "0644"
+    owner: root
+    content: |
+      [Unit]
+      Description=tldraw sync server
+      Wants=gcr-online.target docker.service
+      After=gcr-online.target docker.service
+
+      [Service]
+      Type=simple
+
+      # One supervisor, not two. `docker run --restart=always` alongside systemd
+      # means both are trying to own the process, and during VM shutdown their
+      # ordering is not guaranteed — the casualty is ExecStop, which is exactly
+      # the moment the Snapshot has to land. So: --rm here, Restart=always below.
+      Restart=always
+      RestartSec=5
+
+      # docker-credential-gcr writes to $HOME/.docker/config.json. /root is not
+      # writable on COS, so HOME has to point somewhere under /home.
+      Environment=HOME=/home/appuser
+
+      # persistRoomSnapshot retries three times with 1s+2s+4s of backoff, so a
+      # single Room can legitimately need ~8s to persist, and shutdown() runs
+      # every held Room in parallel. 60s of docker stop inside a 90s systemd
+      # timeout leaves generous headroom. Unlike Cloud Run's fixed 10s, this is
+      # a number we get to choose — it is the main reason this target loses less
+      # data on instance replacement.
+      TimeoutStopSec=90
+
+      ExecStartPre=/usr/bin/mkdir -p /home/appuser
+      ExecStartPre=/usr/bin/docker-credential-gcr configure-docker --registries=${artifact_registry_host}
+      # Leading '-' so a missing container is not a failure.
+      ExecStartPre=-/usr/bin/docker rm -f tldraw-sync
+      ExecStartPre=/usr/bin/docker pull ${image}
+
+      # --network=host so the app binds :${app_port} on the VM itself, which is
+      # what nginx upstreams and the health checks target.
+      # HOSTNAME: docker would otherwise set it to the container ID. Passing the
+      # VM name makes Owner Identity legible in the Handover logs.
+      ExecStart=/usr/bin/docker run --rm --name tldraw-sync \
+        --network=host \
+        --log-driver=gcplogs \
+        --env PORT=${app_port} \
+        --env NODE_ENV=production \
+        --env REDIS_URL=${redis_url} \
+        --env GCS_BUCKET_NAME=${gcs_bucket_name} \
+        --env HOSTNAME=%H \
+        ${image}
+
+      # SIGTERM to node, then up to 60s for handleShutdown() to persist every
+      # Snapshot and release every Room Lock before SIGKILL.
+      ExecStop=/usr/bin/docker stop --time=60 tldraw-sync
+
+      [Install]
+      WantedBy=multi-user.target
+
+runcmd:
+  - systemctl daemon-reload
+  - systemctl enable --now tldraw-sync.service

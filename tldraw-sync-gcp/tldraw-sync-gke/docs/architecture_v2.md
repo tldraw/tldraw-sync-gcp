@@ -1,0 +1,777 @@
+# tldraw-sync-gke Architecture
+
+This document provides a comprehensive overview of the tldraw-sync-gke application structure, implementation details, and design decisions.
+
+## Table of Contents
+
+1. [Overview](#overview)
+2. [High-Level Architecture](#high-level-architecture)
+3. [Project Structure](#project-structure)
+4. [Backend Components](#backend-components)
+5. [Room Management & Locking](#room-management--locking)
+6. [Data Persistence](#data-persistence)
+7. [Kubernetes Infrastructure](#kubernetes-infrastructure)
+8. [Request Flow](#request-flow)
+9. [Known Limitations](#known-limitations)
+
+---
+
+## Overview
+
+tldraw-sync-gke is a **horizontally scalable sync backend** for [tldraw](https://tldraw.com), designed to run on Google Kubernetes Engine (GKE). It enables real-time collaboration by synchronizing drawing state across multiple clients via WebSocket connections.
+
+### Key Technologies
+
+| Layer                   | Technology               |
+| ----------------------- | ------------------------ |
+| Runtime                 | Node.js 20               |
+| HTTP Server             | Express 5                |
+| WebSocket               | ws library               |
+| Sync Protocol           | @tldraw/sync-core        |
+| Distributed Locking     | Redis                    |
+| Persistence             | Google Cloud Storage     |
+| Metrics                 | Prometheus (prom-client) |
+| Container Orchestration | Kubernetes (GKE)         |
+| Ingress                 | NGINX Ingress Controller |
+
+---
+
+## High-Level Architecture
+
+```
+                                    EXTERNAL CLIENTS
+                                           │
+                                           ▼
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                              NGINX Ingress                                    │
+│                    (TLS termination, consistent hashing by URI)              │
+│                         nginx.ingress.kubernetes.io/upstream-hash-by: "$uri" │
+└──────────────────────────────────────────────────────────────────────────────┘
+                                           │
+                                           ▼
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                           ClusterIP Service                                   │
+│                             (tldraw-svc:80)                                   │
+└──────────────────────────────────────────────────────────────────────────────┘
+                                           │
+                    ┌──────────────────────┼──────────────────────┐
+                    ▼                      ▼                      ▼
+             ┌───────────┐          ┌───────────┐          ┌───────────┐
+             │   Pod A   │          │   Pod B   │          │   Pod C   │
+             │  :3001    │          │  :3001    │          │  :3001    │
+             └─────┬─────┘          └─────┬─────┘          └─────┬─────┘
+                   │                      │                      │
+                   └──────────────────────┼──────────────────────┘
+                                          │
+                         ┌────────────────┴────────────────┐
+                         ▼                                 ▼
+                  ┌─────────────┐                  ┌──────────────┐
+                  │    Redis    │                  │     GCS      │
+                  │   (Locks)   │                  │  (Snapshots) │
+                  └─────────────┘                  └──────────────┘
+```
+
+---
+
+## Project Structure
+
+```
+tldraw-sync-gcp/tldraw-sync-gke/
+├── src/                        # Backend source code
+│   ├── index.ts                # Application entry point
+│   ├── roomManager.ts          # Room lifecycle & Redis locking
+│   ├── gcsStorage.ts           # GCS persistence layer
+│   ├── metrics.ts              # Prometheus metrics definitions
+│   └── unfurl.ts               # URL metadata extraction
+│
+├── kubernetes/                 # K8s manifests
+│   ├── deployment.yaml         # Deployment + HPA
+│   ├── ingress.yaml            # Ingress + ClusterIP Service
+│   ├── service-account.yaml    # GCP Workload Identity
+│   └── pod-monitor.yaml        # GCP Managed Prometheus
+│
+├── tldraw-client/              # Example React client
+│   └── src/
+│       ├── multiplayerAssetStore.ts
+│       └── getBookmarkPreview.ts
+│
+├── infra-terraform/            # Terraform modules for GCP
+│   ├── gcp/
+│   └── modules/
+│
+├── scripts/                    # Hand-run probes against a deployed target
+│   ├── test-handover.js        # Handover integration check
+│   ├── test-lock.js
+│   └── test-stress.js
+│
+├── Dockerfile                  # Multi-stage build
+├── package.json
+└── tsconfig.json
+```
+
+---
+
+## Backend Components
+
+### 1. Entry Point (`src/index.ts`)
+
+The main application file that orchestrates all components:
+
+```typescript
+// Key responsibilities:
+// 1. Express HTTP server setup
+// 2. WebSocket server (noServer mode)
+// 3. Route definitions
+// 4. Graceful shutdown handling
+```
+
+#### HTTP Endpoints
+
+| Endpoint                 | Method | Description                        |
+| ------------------------ | ------ | ---------------------------------- |
+| `/api/health`            | GET    | Health check for K8s probes        |
+| `/metrics`               | GET    | Prometheus metrics endpoint        |
+| `/api/uploads/:uploadId` | POST   | Asset upload to GCS                |
+| `/api/uploads/:uploadId` | GET    | Asset download from GCS            |
+| `/api/unfurl`            | GET    | URL metadata extraction            |
+| `/api/connect/:roomId`   | WS     | WebSocket connection for room sync |
+
+#### WebSocket Upgrade Flow
+
+The upgrade handler is async and prepares the room BEFORE accepting the WebSocket connection. This eliminates race conditions where client messages could arrive before the room is ready:
+
+```typescript
+server.on("upgrade", async (request, socket, head) => {
+  // 1. Parse URL: /api/connect/{roomId}?sessionId={sessionId}
+  // 2. Validate roomId and sessionId exist
+  // 3. Prepare room (acquire lock, load from GCS) BEFORE upgrading
+  const { room, isNewRoom } = await roomManager.getOrPrepareRoom(roomId)
+  // 4. Upgrade connection - room is guaranteed ready
+  wss.handleUpgrade(request, socket, head, (ws) => {
+    // 5. Connect socket synchronously to the ready room
+    roomManager.connectSocket(room, roomId, ws, sessionId, isNewRoom)
+  })
+})
+```
+
+This architecture ensures the TLSocketRoom listener is attached before any client messages can arrive.
+
+#### WebSocket Keep-Alive
+
+The server implements server-side ping to prevent GCP Load Balancer idle timeouts (default 30s):
+
+```typescript
+const PING_INTERVAL_MS = 25000 // 25 seconds
+
+// Inside the handleUpgrade callback:
+const pingInterval = setInterval(() => {
+  if (ws.readyState === WebSocket.OPEN) {
+    ws.ping()
+  }
+}, PING_INTERVAL_MS)
+
+ws.on("close", () => clearInterval(pingInterval))
+ws.on("error", () => clearInterval(pingInterval))
+```
+
+This ensures long-lived WebSocket connections remain active even during idle periods.
+
+#### Graceful Shutdown
+
+On `SIGTERM` or `SIGINT`:
+
+1. Stop accepting new connections
+2. Call `roomManager.shutdown()` to save all rooms and release locks
+3. Exit process
+
+---
+
+### 2. Room Manager (`src/roomManager.ts`)
+
+The core component managing room lifecycle, distributed locking, and real-time sync.
+
+#### Constants
+
+```typescript
+const LOCK_TIMEOUT_SEC = 10 // Redis lock TTL
+const THROTTLE_SAVE_MS = 10_000 // GCS save frequency
+const HEARTBEAT_INTERVAL_MS = 5000 // Lock renewal interval
+const HANDOVER_TIMEOUT_MS = 5000 // Wait for lock release during handover
+const HANDOVER_READY_TIMEOUT_MS = 10000 // Wait for new owner ready signal
+const PING_INTERVAL_MS = 25000 // WebSocket keep-alive ping interval (in index.ts)
+```
+
+Note: Room cleanup delay is handled by TLSocketRoom's built-in `clientTimeout` (10s default).
+
+#### Pod Identity
+
+Each pod generates a unique identifier on startup:
+
+```typescript
+const POD_NAME = `TldrawRoomManagerPod-${randomUUID().slice(0, 8)}`
+```
+
+This ensures correct lock ownership identification across pod restarts.
+
+#### Redis Client Architecture
+
+Four separate Redis connections are used:
+
+```typescript
+const redisClient = createClient({ url: REDIS_URL }) // Commands (SET, GET, DEL)
+const subClient = redisClient.duplicate() // room-handover subscription
+const pubClient = redisClient.duplicate() // Pub/Sub publishing
+const handoverSubClient = redisClient.duplicate() // Dynamic per-room subscriptions
+```
+
+This separation is required because:
+
+1. Redis Pub/Sub puts the connection into a blocking subscriber mode
+2. The `handoverSubClient` handles dynamic subscriptions for `handover-lock-released:{roomId}` and `handover-ready:{roomId}` channels without blocking the main subscription client
+
+#### Room Acquisition Flow
+
+The room lifecycle is split into two phases:
+
+1. **`getOrPrepareRoom(roomId)`** - Async room preparation (called before WebSocket upgrade)
+2. **`connectSocket(room, roomId, ws, sessionId, isNewRoom)`** - Sync socket attachment
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│              getOrPrepareRoom(roomId) - BEFORE WebSocket upgrade        │
+└─────────────────────────────────────────────────────────────────────────┘
+                                     │
+                                     ▼
+                        ┌────────────────────────┐
+                        │ Room in activeRooms?   │
+                        └───────────┬────────────┘
+                                    │
+                    ┌───────────────┴───────────────┐
+                    ▼                               ▼
+                   YES                              NO
+                    │                               │
+                    ▼                               ▼
+             Return room            ┌────────────────────────┐
+             (isNewRoom=false)      │ Room in loadingRooms?  │
+                                    └───────────┬────────────┘
+                                                │
+                                ┌───────────────┴───────────────┐
+                                ▼                               ▼
+                               YES                              NO
+                                │                               │
+                                ▼                               ▼
+                        Await existing              Try Redis lock (SETNX)
+                        load promise                        │
+                        Return room                 ┌───────┴───────┐
+                        (isNewRoom=false)           ▼               ▼
+                                                 ACQUIRED        DENIED
+                                                    │               │
+                                                    ▼               ▼
+                                            Load from GCS     Initiate two-phase
+                                            Start heartbeat   handover, wait for
+                                            Return room       lock release, then
+                                            (isNewRoom=true)  acquire & load
+                                                              (isNewRoom=true)
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│     connectSocket(room, roomId, ws, sessionId, isNewRoom) - AFTER       │
+└─────────────────────────────────────────────────────────────────────────┘
+                                     │
+                                     ▼
+                        Attach socket to TLSocketRoom
+                        (room is guaranteed ready)
+```
+
+#### Room Cleanup via onSessionRemoved
+
+Room cleanup uses TLSocketRoom's built-in `onSessionRemoved` callback:
+
+```typescript
+room = new TLSocketRoom({
+  schema,
+  initialSnapshot,
+  onDataChange: () => saveToGCSThrottled(),
+  onSessionRemoved: (_room, { sessionId, numSessionsRemaining }) => {
+    if (numSessionsRemaining === 0) {
+      cleanupRoom(roomId) // Release lock, remove from activeRooms
+    }
+  },
+})
+```
+
+This ensures cleanup happens correctly regardless of which socket disconnects last.
+
+#### Lock Heartbeat
+
+While a room is active, the lock is renewed every 5 seconds:
+
+```typescript
+const lockHeartbeat = setInterval(() => {
+  redisClient.set(lockKey, POD_NAME, { EX: LOCK_TIMEOUT_SEC, XX: true })
+}, HEARTBEAT_INTERVAL_MS)
+```
+
+The `XX` flag ensures we only update if the key exists (we still own it).
+
+#### Two-Phase Room Handover Mechanism
+
+When a pod receives a connection for a room owned by another pod, a coordinated two-phase handover ensures users are only disconnected after the new owner is ready:
+
+**Phase 1: Lock Transfer**
+
+1. New pod (Pod C) fails to acquire lock via `SETNX`
+2. Pod C subscribes to `handover-lock-released:{roomId}` channel
+3. Pod C publishes handover request to `room-handover` channel
+4. Owning pod (Pod A) saves state to GCS, releases lock
+5. Pod A publishes to `handover-lock-released:{roomId}`
+
+**Phase 2: Ready Confirmation**
+
+6. Pod C acquires lock after receiving lock-released signal
+7. Pod C loads room state from GCS
+8. Pod C publishes to `handover-ready:{roomId}`
+9. Pod A receives ready signal, NOW closes WebSocket connections (code 1013)
+10. Existing users on Pod A automatically reconnect to Pod C (which is ready)
+
+**Key behavior**: The client that triggered the handover (by connecting to Pod C) waits during this process. Their WebSocket is only accepted after the room is ready, so they get a working connection on the first attempt. Only Pod A's existing users need to reconnect.
+
+**Redis Channels:**
+
+| Channel                           | Direction     | Purpose                            |
+| --------------------------------- | ------------- | ---------------------------------- |
+| `room-handover`                   | Pod C → Pod A | Request room release               |
+| `handover-lock-released:{roomId}` | Pod A → Pod C | Lock is free, acquire now          |
+| `handover-ready:{roomId}`         | Pod C → Pod A | Ready to serve, close your sockets |
+
+See `docs/coordinated-handover.md` for detailed protocol documentation.
+
+---
+
+### 3. GCS Storage (`src/gcsStorage.ts`)
+
+Handles persistence of room snapshots and user-uploaded assets.
+
+#### Room Snapshots
+
+```typescript
+// Storage path: gs://{bucket}/rooms/{roomId}
+const getRoomSnapshotName = (roomId: string) => `rooms/${roomId}`
+
+// Fetch: Returns undefined for new rooms (404 is expected)
+export async function fetchRoomSnapshot(roomId: string): Promise<RoomSnapshot | undefined>
+
+// Persist: Saves with retry logic (3 attempts, exponential backoff)
+export async function persistRoomSnapshot(roomId: string, snapshot: RoomSnapshot)
+```
+
+#### Asset Storage
+
+```typescript
+// Storage path: gs://{bucket}/uploads/{sanitized-uploadId}
+const getAssetObjectName = (uploadId: string) =>
+  `uploads/${uploadId.replace(/[^a-zA-Z0-9._-]+/g, "_")}`
+
+// Upload: Streams request body directly to GCS
+export async function handleAssetUpload(req: Request, res: Response)
+
+// Download: Streams GCS object directly to response
+export async function handleAssetDownload(req: Request, res: Response)
+```
+
+#### Retry Logic
+
+Transient GCS errors are retried with exponential backoff:
+
+```typescript
+async function retryOperation<T>(operation: () => Promise<T>, retries = 3, delay = 1000): Promise<T>
+```
+
+---
+
+### 4. Metrics (`src/metrics.ts`)
+
+Prometheus metrics for observability:
+
+| Metric                      | Type      | Description                  |
+| --------------------------- | --------- | ---------------------------- |
+| `tldraw_active_rooms`       | Gauge     | Rooms currently in memory    |
+| `tldraw_active_connections` | Gauge     | Active WebSocket connections |
+| `tldraw_room_latency`       | Histogram | HTTP request duration        |
+| `tldraw_error_rate`         | Counter   | Error count by type          |
+
+Plus default Node.js metrics (memory, CPU, event loop, etc.).
+
+---
+
+### 5. URL Unfurling (`src/unfurl.ts`)
+
+Extracts Open Graph metadata for link previews:
+
+```typescript
+// GET /api/unfurl?url=https://example.com
+// Returns: { title, description, image, favicon }
+```
+
+Uses `open-graph-scraper` library.
+
+---
+
+## Room Management & Locking
+
+### Why Distributed Locking?
+
+In a multi-pod deployment, without coordination:
+
+- Multiple pods could load the same room simultaneously
+- Each would have divergent state
+- Clients on different pods would see different data (split-brain)
+
+### Lock Design
+
+```
+Redis Key:    lock:room:{roomId}
+Value:        {pod-unique-id}
+TTL:          10 seconds
+Renewal:      Every 5 seconds
+```
+
+### Lock Lifecycle
+
+```
+┌──────────────┐     ┌──────────────┐     ┌──────────────┐
+│   ACQUIRE    │ ──► │    RENEW     │ ──► │   RELEASE    │
+│   (SETNX)    │     │   (SET XX)   │     │    (DEL)     │
+└──────────────┘     └──────────────┘     └──────────────┘
+      │                    │                     │
+      │                    │                     │
+      ▼                    ▼                     ▼
+   Before WS            Every 5s            On shutdown,
+   upgrade              while active        onSessionRemoved
+   (async prep)                             (numSessions=0),
+                                            or handover
+```
+
+### Failure Scenarios
+
+| Scenario          | Behavior                                        |
+| ----------------- | ----------------------------------------------- |
+| Pod crashes       | Lock expires after 10s, another pod can acquire |
+| Network partition | Lock expires, GCS has last saved state          |
+| Graceful shutdown | Lock deleted immediately, snapshot saved        |
+
+---
+
+## Data Persistence
+
+### Snapshot Strategy
+
+- **Trigger**: On any data change
+- **Frequency**: Throttled to max once per 10 seconds
+- **Format**: JSON serialization of `RoomSnapshot`
+- **Location**: `gs://{bucket}/rooms/{roomId}`
+
+### Persistence Flow
+
+```
+User draws something
+        │
+        ▼
+TLSocketRoom.onDataChange()
+        │
+        ▼
+saveToGCSThrottled() [lodash.throttle, 10s]
+        │
+        ▼
+persistRoomSnapshot()
+        │
+        ▼
+GCS: rooms/{roomId}
+```
+
+### Data Recovery
+
+On room load:
+
+1. Fetch snapshot from GCS
+2. If exists, initialize `TLSocketRoom` with `initialSnapshot`
+3. If 404, start with empty room
+
+---
+
+## Kubernetes Infrastructure
+
+### Deployment (`kubernetes/deployment.yaml`)
+
+```yaml
+spec:
+  replicas: 3
+  containers:
+    - name: tldraw-sync
+      resources:
+        requests: { memory: "256Mi", cpu: "500m" }
+        limits: { memory: "512Mi", cpu: "1000m" }
+      livenessProbe:
+        httpGet: { path: /metrics, port: 3001 }
+      readinessProbe:
+        httpGet: { path: /metrics, port: 3001 }
+```
+
+### HorizontalPodAutoscaler
+
+```yaml
+spec:
+  minReplicas: 1
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource: { name: cpu, target: { averageUtilization: 70 } }
+    - type: Resource
+      resource: { name: memory, target: { averageUtilization: 70 } }
+```
+
+### Ingress (`kubernetes/ingress.yaml`)
+
+```yaml
+metadata:
+  annotations:
+    nginx.ingress.kubernetes.io/upstream-hash-by: "$uri"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+```
+
+**Key annotation**: `upstream-hash-by: "$uri"` enables consistent hashing based on the request URI, attempting to route requests for the same room to the same pod.
+
+### Service Account (`kubernetes/service-account.yaml`)
+
+Uses GKE Workload Identity to grant pods access to GCS without service account keys:
+
+```yaml
+annotations:
+  iam.gke.io/gcp-service-account: "tldraw-sync-sa@{project}.iam.gserviceaccount.com"
+```
+
+---
+
+## Request Flow
+
+### New User Joining Existing Room
+
+```
+1. Client: WebSocket connect to wss://gcp-sync.tldraw.xyz/api/connect/room-abc?sessionId=xyz
+
+2. NGINX: Hashes "room-abc" → routes to Pod B
+
+3. Pod B (index.ts) - BEFORE accepting WebSocket:
+   - Parses roomId="room-abc", sessionId="xyz"
+   - Calls roomManager.getOrPrepareRoom("room-abc")
+
+4. Pod B (roomManager.ts) - Room preparation:
+   - Checks activeRooms: not found
+   - Checks loadingRooms: not found
+   - Tries Redis SETNX on "lock:room:room-abc"
+
+5a. Lock acquired:
+    - Fetches snapshot from GCS
+    - Creates TLSocketRoom with onSessionRemoved callback
+    - Starts lock heartbeat
+    - Returns { room, isNewRoom: true }
+
+5b. Lock denied (another pod owns it):
+    - Initiates two-phase handover
+    - Waits for lock release signal (up to 5s)
+    - Acquires lock after handover
+    - Loads from GCS, returns { room, isNewRoom: true }
+
+5c. Lock denied and handover times out:
+    - Throws LOCK_ACQUISITION_FAILED
+    - Socket is destroyed (client will retry)
+
+6. Pod B (index.ts) - AFTER room is ready:
+   - Accepts WebSocket upgrade via wss.handleUpgrade()
+   - Calls roomManager.connectSocket() to attach socket to room
+   - Client receives initial sync data immediately
+```
+
+### Asset Upload
+
+```
+1. Client: POST /api/uploads/my-image.png
+   Body: <binary image data>
+
+2. Pod (gcsStorage.ts):
+   - Validates content-type (image/* or video/*)
+   - Sanitizes uploadId
+   - Streams body to GCS
+   - Returns { ok: true }
+
+3. Later references: GET /api/uploads/my-image.png
+   - Streams from GCS with caching headers
+```
+
+---
+
+## Performance & Capacity
+
+Based on stress testing with k6 from within GCP:
+
+### Tested Configuration
+
+| Component     | Configuration |
+| ------------- | ------------- |
+| NGINX Ingress | 5 replicas    |
+| App Pods      | 10 replicas   |
+| Nodes         | 3× e2-medium  |
+
+### Capacity Results
+
+| VUs    | Rooms × Users | Success Rate | Connection Latency (p95) |
+| ------ | ------------- | ------------ | ------------------------ |
+| 5,000  | 50 × 100      | **100%**     | ~8s under load           |
+| 7,000  | 100 × 70      | **99.99%**   | ~16s under load          |
+| 10,000 | 100 × 100     | 30%          | Exceeded capacity        |
+
+### Connection Latency
+
+| Scenario              | Latency    |
+| --------------------- | ---------- |
+| Normal load           | **~235ms** |
+| Heavy load (7000 VUs) | ~10-20s    |
+
+### Recommended Capacity
+
+For the tested infrastructure (5 NGINX + 10 pods + 3 nodes):
+
+- **Safe capacity**: ~7,000 concurrent WebSocket connections
+- **Rooms supported**: 100+
+- **Users per room**: Up to 70 reliably
+
+To scale beyond 7,000 connections:
+
+1. Increase NGINX Ingress replicas
+2. Use larger node types (e2-standard-4 or higher)
+3. Increase `worker-connections` in NGINX ConfigMap
+
+---
+
+## Known Limitations
+
+### 1. Hash Ring Rebalancing During Scaling (RESOLVED)
+
+**Problem**: NGINX consistent hashing (`upstream-hash-by: "$uri"`) recalculates when pods are added/removed. This causes the room-to-pod mapping to change, routing new connections to a different pod than the current room owner.
+
+**Root Cause Analysis**:
+
+The TLDraw Ingress Configuration previously stated "The same hash always maps to the same pod, ensuring consistency" - this assumption is **incorrect** for dynamic pod counts.
+
+```
+Example: Scale-up from 2 to 3 pods
+
+Before:  hash("room-xyz") mod 2 = Pod A
+After:   hash("room-xyz") mod 3 = Pod C  ← CHANGED
+
+Pod A still holds the Redis lock, but new connections go to Pod C.
+```
+
+**Solution**: Coordinated Handover Protocol
+
+When a pod receives a connection for a room owned by another pod:
+
+1. Receiving pod detects lock conflict via Redis SETNX
+2. Subscribes to completion channel `handover-complete:{roomId}`
+3. Publishes handover request to `room-handover` channel
+4. Owning pod saves state to GCS, releases lock, publishes completion
+5. Receiving pod acquires lock, loads state, handles connection
+
+```
+┌──────────────┐         ┌──────────────┐         ┌──────────────┐
+│   Pod C      │         │    Redis     │         │   Pod A      │
+│  (new target)│         │              │         │   (owner)    │
+└──────┬───────┘         └──────┬───────┘         └──────┬───────┘
+       │                        │                        │
+       │  SETNX lock:room:xyz   │                        │
+       │───────────────────────►│                        │
+       │◄───────────────────────│  DENIED                │
+       │                        │                        │
+       │  SUBSCRIBE             │                        │
+       │  handover-complete:xyz │                        │
+       │───────────────────────►│                        │
+       │                        │                        │
+       │  PUBLISH room-handover │                        │
+       │───────────────────────►│───────────────────────►│
+       │                        │                        │
+       │                        │          Save to GCS   │
+       │                        │          DEL lock      │
+       │                        │◄───────────────────────│
+       │                        │                        │
+       │                        │  PUBLISH               │
+       │  Receive completion    │  handover-complete:xyz │
+       │◄───────────────────────│◄───────────────────────│
+       │                        │                        │
+       │  SETNX lock:room:xyz   │                        │
+       │───────────────────────►│                        │
+       │◄───────────────────────│  ACQUIRED              │
+       │                        │                        │
+       │  Load from GCS         │                        │
+       │  Handle connection     │                        │
+       ▼                        ▼                        ▼
+```
+
+**Existing User Migration**: When the owning pod releases the room, it closes all WebSocket connections with code `1013`. The tldraw client automatically reconnects, and NGINX routes them to the new owner pod. All users end up on the same room.
+
+**Timeout Handling**: If handover doesn't complete within 5 seconds (owner crashed/unresponsive), the lock TTL (10s) ensures eventual acquisition.
+
+**Metrics**: `tldraw_handover_*` metrics track frequency, success rate, and duration.
+
+See `docs/hash-ring-rebalancing-proposal-presentation.md` for the original analysis.
+
+### 2. No Active Room Migration
+
+Rooms are not proactively migrated when pods scale down. The handover mechanism is reactive (triggered by conflicting connection attempts). This is acceptable because:
+
+- Scale-down triggers graceful shutdown, releasing locks immediately
+- New connections acquire locks normally on remaining pods
+- Existing connections on terminated pods reconnect automatically
+
+### 3. Single Region
+
+The current design assumes single-region deployment. Multi-region would require additional coordination for Redis and GCS.
+
+### 4. No Room TTL
+
+Empty rooms are cleaned up when the last user leaves, but there's no automatic cleanup for abandoned rooms in GCS.
+
+---
+
+## Environment Variables
+
+| Variable          | Required | Default                | Description                      |
+| ----------------- | -------- | ---------------------- | -------------------------------- |
+| `PORT`            | No       | 3001                   | HTTP/WS server port              |
+| `REDIS_URL`       | No       | redis://localhost:6379 | Redis connection string          |
+| `GCS_BUCKET_NAME` | **Yes**  | -                      | GCS bucket for persistence       |
+| `NODE_ENV`        | No       | -                      | Set to "production" in container |
+
+---
+
+## Dependencies
+
+### Runtime
+
+| Package                 | Purpose                           |
+| ----------------------- | --------------------------------- |
+| `@tldraw/sync-core`     | Room sync protocol implementation |
+| `@tldraw/tlschema`      | tldraw data schema                |
+| `@google-cloud/storage` | GCS SDK                           |
+| `redis`                 | Redis client                      |
+| `express`               | HTTP server                       |
+| `ws`                    | WebSocket server                  |
+| `prom-client`           | Prometheus metrics                |
+| `lodash.throttle`       | Throttle GCS saves                |
+| `open-graph-scraper`    | URL unfurling                     |
+
+### Development
+
+| Package      | Purpose                              |
+| ------------ | ------------------------------------ |
+| `tsx`        | TypeScript execution with watch mode |
+| `typescript` | Type checking and compilation        |

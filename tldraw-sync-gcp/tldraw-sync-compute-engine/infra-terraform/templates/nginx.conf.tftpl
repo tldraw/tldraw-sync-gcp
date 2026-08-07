@@ -1,0 +1,83 @@
+events {
+  worker_connections 16384;
+}
+
+http {
+  # ---- Room Affinity ------------------------------------------------------
+  #
+  # This is the whole point of the nginx tier, and it is a direct copy of what
+  # the GKE target gets from ingress-nginx:
+  #
+  #   nginx.ingress.kubernetes.io/upstream-hash-by: "$uri"
+  #
+  # $uri is /api/connect/<roomId>, so every Session of a Room hashes to the same
+  # app VM and lands on that Room's Room Owner. `consistent` makes it a ketama
+  # ring, so changing app_instance_count moves only the fraction of Rooms whose
+  # hash actually moved rather than reshuffling all of them.
+  #
+  # Google Cloud Load Balancing cannot do this: it hashes a header or a cookie,
+  # never the request path. That is why the app tier sits behind nginx rather
+  # than directly behind the load balancer. See ../../docs/adr/0004.
+  upstream tldraw_sync_app {
+    hash $uri consistent;
+
+%{ for addr in app_addresses ~}
+    server ${addr}:${app_port} max_fails=3 fail_timeout=10s;
+%{ endfor ~}
+
+    keepalive 128;
+  }
+
+  map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+  }
+
+  # Trust the load balancer's X-Forwarded-For so logs show the real client.
+  set_real_ip_from 35.191.0.0/16;
+  set_real_ip_from 130.211.0.0/22;
+  real_ip_header X-Forwarded-For;
+  real_ip_recursive on;
+
+  log_format upstreamed '$remote_addr "$request" $status '
+                        'upstream=$upstream_addr rt=$request_time';
+  access_log /dev/stdout upstreamed;
+  error_log /dev/stderr warn;
+
+  server {
+    listen ${nginx_port} default_server;
+
+    # The load balancer health-checks nginx itself here. It deliberately does
+    # not proxy: if it did, one unhealthy app VM would take the whole nginx
+    # instance out of rotation for every Room, not just the Rooms it owns.
+    location = /nginx-health {
+      access_log off;
+      return 200 "ok\n";
+    }
+
+    location / {
+      proxy_pass http://tldraw_sync_app;
+      proxy_http_version 1.1;
+
+      # The WebSocket handshake.
+      proxy_set_header Upgrade $http_upgrade;
+      proxy_set_header Connection $connection_upgrade;
+
+      proxy_set_header Host $host;
+      proxy_set_header X-Real-IP $remote_addr;
+      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+      proxy_set_header X-Forwarded-Proto $scheme;
+
+      # A Session is a long-lived connection that can be silent for minutes at a
+      # time. The app pings every 25s, but these still have to outlast any quiet
+      # stretch. Matches the GKE Ingress annotations.
+      proxy_read_timeout 3600s;
+      proxy_send_timeout 3600s;
+
+      # Asset uploads stream through the server to GCS; don't spool them.
+      proxy_request_buffering off;
+      proxy_buffering off;
+      client_max_body_size 100m;
+    }
+  }
+}

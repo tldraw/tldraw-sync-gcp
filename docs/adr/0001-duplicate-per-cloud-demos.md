@@ -5,3 +5,5 @@
 ## Consequences
 
 The duplicated ~800 LOC will drift: a fix to the handover protocol in one demo does not reach the other. Treat cross-porting as a deliberate step when touching `roomManager.ts`, and keep the storage module the _only_ intentional difference — if a second file starts to diverge for cloud reasons, that is the signal to revisit this decision.
+
+Extended by [`0003-three-gcp-deployment-targets.md`](0003-three-gcp-deployment-targets.md): the same reasoning is applied per deployment target within a cloud, so GCP holds three copies and cross-porting is a four-way obligation.

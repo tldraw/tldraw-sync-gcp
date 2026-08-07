@@ -2,7 +2,7 @@
 
 A horizontally scalable sync backend for [tldraw](https://tldraw.com), targeting **AWS (EKS + S3 + ElastiCache)**.
 
-> This is the AWS demo. The GCP demo lives alongside it in [`../tldraw-sync-gcp`](../tldraw-sync-gcp); see the [repo README](../README.md) for how the two relate. The application layer is a deliberate copy of the GCP demo — see [`../docs/adr/0001-duplicate-per-cloud-demos.md`](../docs/adr/0001-duplicate-per-cloud-demos.md).
+> This is the AWS demo. The GCP demo lives alongside it in [`../tldraw-sync-gcp`](../tldraw-sync-gcp); see the [repo README](../README.md) for how the two relate. The application layer is a deliberate copy of the GCP demo (`../tldraw-sync-gcp/tldraw-sync-gke/src`) — see [`../docs/adr/0001-duplicate-per-cloud-demos.md`](../docs/adr/0001-duplicate-per-cloud-demos.md).
 >
 > **Status:** the server, clients, and local verification are implemented and tested. Infrastructure-as-code (Terraform), Kubernetes manifests, and the deploy workflow are **not yet written** — see [Deployment](#deployment) for the intended target.
 

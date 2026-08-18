@@ -18,6 +18,20 @@ spec:
       labels:
         app: {{ .Release.Name }}-gcs
     spec:
+      # fake-gcs-server adopts each top-level directory under its data dir as a
+      # bucket at boot, so seeding one here gives the bucket back on every pod
+      # start. The post-install Job this replaces ran only at deploy time, and
+      # with no volume behind the emulator a restarted pod came back bucketless
+      # until the next helm upgrade.
+      initContainers:
+        - name: seed-bucket
+          image: busybox:latest
+          command: ["/bin/sh", "-c"]
+          args:
+            - mkdir -p /data/{{ .Values.env.gcsBucketName }}
+          volumeMounts:
+            - name: gcs-data
+              mountPath: /data
       containers:
         - name: fake-gcs
           image: fsouza/fake-gcs-server:latest
@@ -32,11 +46,19 @@ spec:
             - "http://{{ .Release.Name }}-gcs:4443"
           ports:
             - containerPort: 4443
+          volumeMounts:
+            - name: gcs-data
+              mountPath: /data
           readinessProbe:
             httpGet:
               path: /storage/v1/b
               port: 4443
             periodSeconds: 5
+      volumes:
+        # emptyDir, not a PVC: Snapshots stay disposable, but the bucket itself
+        # is re-seeded by the init container on every start.
+        - name: gcs-data
+          emptyDir: {}
 ---
 apiVersion: v1
 kind: Service

@@ -33,14 +33,13 @@ Only the storage layer differs from the GCP demo: [`src/s3Storage.ts`](src/s3Sto
 cp .env.example .env
 
 docker run -d --name tldraw-redis -p 6379:6379 redis:7-alpine
-docker run -d --name tldraw-minio -p 9000:9000 -p 9001:9001 \
-  minio/minio server /data --console-address ":9001"
+docker run -d --name tldraw-localstack -p 4566:4566 localstack/localstack:4.14.0
 
 yarn install
 
-# create the bucket (MinIO console is on http://localhost:9001, minioadmin/minioadmin)
-export AWS_ACCESS_KEY_ID=minioadmin AWS_SECRET_ACCESS_KEY=minioadmin
-node -e 'const {S3Client,CreateBucketCommand}=require("@aws-sdk/client-s3");new S3Client({region:"us-east-1",endpoint:"http://localhost:9000",forcePathStyle:true}).send(new CreateBucketCommand({Bucket:"tldraw-test-bucket"}))'
+# create the bucket (LocalStack accepts any credentials; "test" is its convention)
+export AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test
+docker exec tldraw-localstack awslocal s3 mb s3://tldraw-test-bucket
 
 yarn dev          # backend on http://localhost:3001
 ```
@@ -61,8 +60,8 @@ cd examples/minimal-frontend && npm install && npm run dev
 | `REDIS_URL`           | `redis://localhost:6379`         | Room locks + handover pub/sub (`rediss://` for TLS)      |
 | `S3_BUCKET_NAME`      | — (required)                     | Bucket for `rooms/` snapshots and `uploads/` assets      |
 | `AWS_REGION`          | `us-east-1`                      | S3 client region                                         |
-| `S3_ENDPOINT`         | unset                            | Local emulator only (MinIO). Unset in production         |
-| `S3_FORCE_PATH_STYLE` | `true` when `S3_ENDPOINT` is set | Path-style addressing, required by MinIO                 |
+| `S3_ENDPOINT`         | unset                            | Local emulator only (LocalStack). Unset in production    |
+| `S3_FORCE_PATH_STYLE` | `true` when `S3_ENDPOINT` is set | Path-style addressing, required by the emulator          |
 | `HOSTNAME`            | pod name                         | Pod identity for lock ownership (injected by Kubernetes) |
 | `VITE_PUBLIC_API_URL` | `http://localhost:3001`          | Client-side: where the backend lives                     |
 

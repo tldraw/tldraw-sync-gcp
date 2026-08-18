@@ -10,18 +10,15 @@
  *   4. After all clients leave, the snapshot is persisted to S3
  *   5. A new client joining later loads the persisted snapshot (restore)
  *
- * Prereqs: Redis on :6379, MinIO on :9000 with the bucket created, and the
- * server running with S3_ENDPOINT + S3_BUCKET_NAME set:
+ * Prereqs: Redis on :6379, LocalStack on :4566 with the bucket created, and
+ * the server running with S3_ENDPOINT + S3_BUCKET_NAME set:
  *
  *   docker run -d -p 6379:6379 redis:7-alpine
- *   docker run -d -p 9000:9000 -p 9001:9001 minio/minio server /data --console-address ":9001"
- *   AWS_ACCESS_KEY_ID=minioadmin AWS_SECRET_ACCESS_KEY=minioadmin \
- *     node -e 'const {S3Client,CreateBucketCommand}=require("@aws-sdk/client-s3"); \
- *       new S3Client({region:"us-east-1",endpoint:"http://localhost:9000",forcePathStyle:true}) \
- *       .send(new CreateBucketCommand({Bucket:"tldraw-test-bucket"}))'
+ *   docker run -d --name tldraw-localstack -p 4566:4566 localstack/localstack:4.14.0
+ *   docker exec tldraw-localstack awslocal s3 mb s3://tldraw-test-bucket
  *   REDIS_URL=redis://localhost:6379 S3_BUCKET_NAME=tldraw-test-bucket \
- *     S3_ENDPOINT=http://localhost:9000 AWS_REGION=us-east-1 \
- *     AWS_ACCESS_KEY_ID=minioadmin AWS_SECRET_ACCESS_KEY=minioadmin \
+ *     S3_ENDPOINT=http://localhost:4566 AWS_REGION=us-east-1 \
+ *     AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test \
  *     PORT=3001 node dist/index.js
  *
  * Usage: node verify-sync.mjs [server-url]
@@ -59,7 +56,7 @@ const SERVER_URL = process.argv[2] || "http://localhost:3001"
 const WS_URL = SERVER_URL.replace(/^http/, "ws")
 const ROOM_ID = `verify-room-${Math.random().toString(36).slice(2, 8)}`
 
-const S3_ENDPOINT = process.env.S3_ENDPOINT || "http://localhost:9000"
+const S3_ENDPOINT = process.env.S3_ENDPOINT || "http://localhost:4566"
 const S3_BUCKET_NAME = process.env.S3_BUCKET_NAME || "tldraw-test-bucket"
 // Resolved from the parent project's node_modules (tldraw-sync-aws/), since
 // Node walks up from this file's directory for bare specifiers.
@@ -68,8 +65,8 @@ const s3 = new S3Client({
   endpoint: S3_ENDPOINT,
   forcePathStyle: true,
   credentials: {
-    accessKeyId: process.env.AWS_ACCESS_KEY_ID || "minioadmin",
-    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY || "minioadmin",
+    accessKeyId: process.env.AWS_ACCESS_KEY_ID || "test",
+    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY || "test",
   },
 })
 

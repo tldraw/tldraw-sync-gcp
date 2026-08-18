@@ -19,12 +19,18 @@ redis:
   enabled: true
   url: ""
 
-# In-cluster MinIO standing in for S3. On EKS set enabled: false; the AWS SDK
-# default provider chain (IRSA) supplies credentials and no endpoint is set.
+# In-cluster LocalStack standing in for S3. On EKS set enabled: false; the AWS
+# SDK default provider chain (IRSA) supplies credentials and no endpoint is set.
 emulator:
   enabled: true
-  accessKey: minioadmin
-  secretKey: minioadmin
+  # Pinned deliberately, not merely for reproducibility: LocalStack merged its
+  # community and pro images in 2026.3.0, so :latest and :stable now exit 55
+  # unless LOCALSTACK_AUTH_TOKEN is set. 4.14.0 is the newest tag that still
+  # runs unauthenticated. Moving this forward means buying a licence.
+  image: localstack/localstack:4.14.0
+  # LocalStack accepts any credentials; these are its documented convention.
+  accessKey: test
+  secretKey: test
 
 podMonitor:
   enabled: true

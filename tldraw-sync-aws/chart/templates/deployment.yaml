@@ -43,7 +43,7 @@ spec:
               value: {{ .Values.env.awsRegion | quote }}
             {{- if .Values.emulator.enabled }}
             - name: S3_ENDPOINT
-              value: "http://{{ .Release.Name }}-minio:9000"
+              value: "http://{{ .Release.Name }}-localstack:4566"
             - name: S3_FORCE_PATH_STYLE
               value: "true"
             - name: AWS_ACCESS_KEY_ID

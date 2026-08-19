@@ -10,10 +10,10 @@ import { RoomSnapshot } from "@tldraw/sync-core"
 import type { Request, Response } from "express"
 import { PassThrough, Readable } from "stream"
 
-// S3_ENDPOINT points the client at a local emulator (e.g. MinIO) for
+// S3_ENDPOINT points the client at a local emulator (LocalStack) for
 // development/verification. Leave unset in production, where the real endpoint
 // and the default credential chain (IRSA on EKS) are used.
-// Path-style addressing is required by MinIO, which has no per-bucket DNS.
+// Path-style addressing is required by the emulator, which has no per-bucket DNS.
 const s3 = new S3Client({
   region: process.env.AWS_REGION || "us-east-1",
   ...(process.env.S3_ENDPOINT

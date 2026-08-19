@@ -21,7 +21,7 @@ The demos share no code — see [`docs/adr/0001-duplicate-per-cloud-demos.md`](d
 
 ## Running them
 
-Every target runs standalone from its own directory, with a local Redis plus a local object-store emulator (fake-gcs-server for GCP, MinIO for AWS). See [`tldraw-sync-gcp/README.md`](tldraw-sync-gcp/README.md) and [`tldraw-sync-aws/README.md`](tldraw-sync-aws/README.md).
+Every target runs standalone from its own directory, with a local Redis plus a local object-store emulator (fake-gcs-server for GCP, LocalStack for AWS). See [`tldraw-sync-gcp/README.md`](tldraw-sync-gcp/README.md) and [`tldraw-sync-aws/README.md`](tldraw-sync-aws/README.md).
 
 To run **both demos in a local Kubernetes cluster** (k3d + ingress-nginx with production-style consistent-hash routing + Prometheus/Grafana), see [`local-cluster/`](local-cluster/).
 

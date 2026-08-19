@@ -1,0 +1,72 @@
+{{- if .Values.emulator.enabled }}
+# S3 stand-in. No persistent volume: Snapshots are disposable locally (spec).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-localstack-init
+data:
+  # Runs inside the container each time S3 comes up. This replaces the old
+  # post-install Job, which could only create the bucket at deploy time — with
+  # no volume behind the emulator, a restarted pod came back bucketless and
+  # stayed that way until the next helm upgrade.
+  create-bucket.sh: |
+    #!/bin/sh
+    awslocal s3 mb s3://{{ .Values.env.s3BucketName }} || true
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-localstack
+  labels:
+    app: {{ .Release.Name }}-localstack
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: {{ .Release.Name }}-localstack
+  template:
+    metadata:
+      labels:
+        app: {{ .Release.Name }}-localstack
+    spec:
+      containers:
+        - name: localstack
+          image: {{ .Values.emulator.image | quote }}
+          env:
+            # Only S3 is used; starting the rest wastes memory and startup time.
+            - name: SERVICES
+              value: "s3"
+            # Without this S3 is loaded lazily on first request, so the init
+            # hook below would race the readiness probe.
+            - name: EAGER_SERVICE_LOADING
+              value: "1"
+          ports:
+            - containerPort: 4566
+          volumeMounts:
+            - name: init-ready
+              mountPath: /etc/localstack/init/ready.d
+          readinessProbe:
+            httpGet:
+              path: /_localstack/health
+              port: 4566
+            periodSeconds: 5
+            # LocalStack is a heavier start than MinIO was; give it room on a
+            # cold image pull rather than thrashing the pod.
+            failureThreshold: 30
+      volumes:
+        - name: init-ready
+          configMap:
+            name: {{ .Release.Name }}-localstack-init
+            defaultMode: 0755
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-localstack
+spec:
+  selector:
+    app: {{ .Release.Name }}-localstack
+  ports:
+    - port: 4566
+      targetPort: 4566
+{{- end }}

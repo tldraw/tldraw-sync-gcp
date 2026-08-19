@@ -20,21 +20,20 @@ locally with emulators:
 ```sh
 # From the tldraw-sync-aws/ directory
 docker run -d --name tldraw-redis -p 6379:6379 redis:7-alpine
-docker run -d --name tldraw-minio -p 9000:9000 -p 9001:9001 \
-  minio/minio server /data --console-address ":9001"
+docker run -d --name tldraw-localstack -p 4566:4566 localstack/localstack:4.14.0
 
 yarn install && yarn build
-export AWS_ACCESS_KEY_ID=minioadmin AWS_SECRET_ACCESS_KEY=minioadmin
-node -e 'const {S3Client,CreateBucketCommand}=require("@aws-sdk/client-s3");new S3Client({region:"us-east-1",endpoint:"http://localhost:9000",forcePathStyle:true}).send(new CreateBucketCommand({Bucket:"tldraw-test-bucket"}))'
+export AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test
+docker exec tldraw-localstack awslocal s3 mb s3://tldraw-test-bucket
 
 REDIS_URL=redis://localhost:6379 \
   S3_BUCKET_NAME=tldraw-test-bucket \
-  S3_ENDPOINT=http://localhost:9000 \
+  S3_ENDPOINT=http://localhost:4566 \
   AWS_REGION=us-east-1 \
   PORT=3001 node dist/index.js
 ```
 
-> `S3_ENDPOINT` points the S3 client at MinIO — leave it unset in production,
+> `S3_ENDPOINT` points the S3 client at LocalStack — leave it unset in production,
 > where the real endpoint + IRSA credentials and the real bucket are used.
 
 ### 2. Start the frontend

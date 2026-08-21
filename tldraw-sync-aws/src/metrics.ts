@@ -31,33 +31,49 @@ export const errorCounter = new client.Counter({
   registers: [register],
 })
 
-export const handoverRequestsCounter = new client.Counter({
-  name: "tldraw_handover_requests_total",
-  help: "Total handover requests initiated",
+// --- Ownership (worker) ---
+
+export const roomClaimsCounter = new client.Counter({
+  name: "tldraw_room_claims_total",
+  help: "Rooms claimed that had no ownership record at all",
   registers: [register],
 })
 
-export const handoverSuccessCounter = new client.Counter({
-  name: "tldraw_handover_success_total",
-  help: "Successful handovers completed",
+export const roomReclaimsCounter = new client.Counter({
+  name: "tldraw_room_reclaims_total",
+  help: "Rooms reallocated from a dead or drained owner",
   registers: [register],
 })
 
-export const handoverTimeoutCounter = new client.Counter({
-  name: "tldraw_handover_timeouts_total",
-  help: "Handovers that timed out",
+export const roomCasConflictsCounter = new client.Counter({
+  name: "tldraw_room_cas_conflicts_total",
+  help: "Conditional writes that lost the race and were re-read",
   registers: [register],
 })
 
-export const lockLostCounter = new client.Counter({
-  name: "tldraw_room_lock_lost_total",
-  help: "Rooms given up because their lock was taken over by another pod",
+export const roomOwnershipLostCounter = new client.Counter({
+  name: "tldraw_room_ownership_lost_total",
+  help: "Rooms given up because the record no longer named this worker",
   registers: [register],
 })
 
-export const handoverDurationHistogram = new client.Histogram({
-  name: "tldraw_handover_duration_seconds",
-  help: "Time taken for handover coordination",
-  buckets: [0.1, 0.5, 1, 2, 5],
+// --- Routing (router) ---
+
+export const membersLiveGauge = new client.Gauge({
+  name: "tldraw_members_live",
+  help: "Workers currently inside MEMBER_TTL, as seen by this router",
+  registers: [register],
+})
+
+export const routerResolveDuration = new client.Histogram({
+  name: "tldraw_router_resolve_duration_seconds",
+  help: "Time to answer which worker owns a room, including any CAS",
+  buckets: [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1],
+  registers: [register],
+})
+
+export const routerRetriesCounter = new client.Counter({
+  name: "tldraw_router_retries_total",
+  help: "Connections retried against a corrected owner after a 409",
   registers: [register],
 })

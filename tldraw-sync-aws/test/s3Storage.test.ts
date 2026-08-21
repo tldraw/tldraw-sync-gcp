@@ -116,10 +116,14 @@ describe("persistRoomSnapshot", () => {
     expect(send).toHaveBeenCalledTimes(2)
   })
 
-  // Documents current behaviour: a persist that exhausts its retries resolves
-  // as if it succeeded. Callers therefore cannot tell a saved room from a lost
-  // one — see the handover finding in the analysis.
-  it("swallows the error after exhausting retries", async () => {
+  it("reports success when the write lands", async () => {
+    send.mockResolvedValue({})
+    await expect(persistRoomSnapshot("room-1", snapshot)).resolves.toBe(true)
+  })
+
+  // The owner acts on this: a worker that cannot persist surrenders its Rooms
+  // rather than holding state it can never save.
+  it("reports failure after exhausting retries, rather than swallowing it", async () => {
     vi.useFakeTimers()
     send.mockRejectedValue(new Error("s3 down"))
 
@@ -127,7 +131,7 @@ describe("persistRoomSnapshot", () => {
     // 1s + 2s + 4s of exponential backoff between the four attempts.
     await vi.advanceTimersByTimeAsync(8_000)
 
-    await expect(persisted).resolves.toBeUndefined()
+    await expect(persisted).resolves.toBe(false)
     expect(send).toHaveBeenCalledTimes(4)
     vi.useRealTimers()
   })

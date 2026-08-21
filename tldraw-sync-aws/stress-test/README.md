@@ -2,6 +2,22 @@
 
 WebSocket load testing using k6 to simulate high-concurrency scenarios with automatic report generation.
 
+> [!WARNING]
+> **This harness measures connect capacity, not sustained sessions.** `k6-websocket-stress.js`
+> opens a WebSocket and sends `{type: "push"}`, but never sends the `connect` message the sync
+> protocol requires. `TLSocketRoom` prunes a session that has not connected within ~10s, so every
+> VU is dropped at 10s no matter what `DURATION` says — while k6 still reports 100% success with
+> every threshold green, because `ws.connect()` succeeded.
+>
+> Verified against `local-cluster` at 4 VUs: `ws_connections_failed: 0`, all thresholds ✓, and
+> `iteration_duration min=10.01s` against a configured 30s, with `ws_errors` equal to the
+> connection count — one rejected `push` each.
+>
+> The numbers below are therefore real measurements of **WebSocket handshake and load-balancer
+> capacity**, and say nothing about sustained collaborative load. Fixing this means speaking the
+> connect handshake directly, or driving the real client the way `../tldraw-client/scale-drill.mjs`
+> does.
+
 ## Benchmark Results
 
 > These numbers were measured against the **GCP** deployment of this demo
@@ -33,10 +49,10 @@ Run the complete stress test with automatic pod scaling and HTML/JSON report:
 cd stress-test
 
 # Full test: 100 rooms × 100 users = 10,000 connections
-./run-full-stress-test.sh
+./run-stress-test.sh
 
 # Custom configuration
-ROOMS=50 USERS_PER_ROOM=50 DURATION=3m ./run-full-stress-test.sh
+ROOMS=50 USERS_PER_ROOM=50 DURATION=3m ./run-stress-test.sh
 ```
 
 This will:

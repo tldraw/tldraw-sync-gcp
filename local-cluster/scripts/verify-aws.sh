@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # E2E verify for the AWS demo running in k3d: runs the demo's own
-# verify-sync.mjs against the ingress, with LocalStack port-forwarded so the
+# verify-sync.mjs against Envoy on :8081, with LocalStack port-forwarded so the
 # script's direct S3 checks (snapshot landed, cold-room restore) work.
+# AWS does not go through ingress-nginx any more; GCP still does.
 set -euo pipefail
 
 CTX=k3d-tldraw-local
@@ -21,4 +22,4 @@ AWS_SECRET_ACCESS_KEY=test \
 S3_ENDPOINT=http://localhost:4566 \
 S3_BUCKET_NAME=tldraw-test-bucket \
 AWS_REGION=us-east-1 \
-node verify-sync.mjs http://aws.localhost:8080
+node verify-sync.mjs "${AWS_URL:-http://localhost:8081}"

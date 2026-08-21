@@ -1,306 +1,374 @@
 import { TLSocketRoom } from "@tldraw/sync-core"
 import { type TLRecord, createTLSchema, defaultShapeSchemas } from "@tldraw/tlschema"
 import { WebSocket } from "ws"
-import { createClient } from "redis"
-import { fetchRoomSnapshot, persistRoomSnapshot } from "./s3Storage.js"
 import throttle from "lodash.throttle"
+import { fetchRoomSnapshot, persistRoomSnapshot } from "./s3Storage.js"
+import { OWNERSHIP_RECHECK_INTERVAL_MS, casOwner, readOwner } from "./registry.js"
+import { Membership, defaultAdvertiseAddr } from "./membership.js"
 import {
   activeRoomsGauge,
-  handoverRequestsCounter,
-  handoverSuccessCounter,
-  handoverTimeoutCounter,
-  handoverDurationHistogram,
-  lockLostCounter,
+  roomCasConflictsCounter,
+  roomClaimsCounter,
+  roomOwnershipLostCounter,
+  roomReclaimsCounter,
 } from "./metrics.js"
-import { randomUUID } from "crypto"
 
-// --- Constants ---
-const LOCK_TIMEOUT_SEC = 10
 const THROTTLE_SAVE_MS = 10_000
-const HEARTBEAT_INTERVAL_MS = (LOCK_TIMEOUT_SEC / 2) * 1000
-const HANDOVER_TIMEOUT_MS = 5000
-const HANDOVER_READY_TIMEOUT_MS = 10000
+const RECONNECT_REASON = "Room reallocated to another server, please reconnect"
+// Consecutive failed Snapshot writes before a worker declares itself unfit to
+// own anything. Each attempt has already burned four tries and ~8s of backoff,
+// so three in a row is a sustained outage, not a blip.
+const MAX_CONSECUTIVE_SAVE_FAILURES = 3
 
-const CHANNEL_HANDOVER_REQUEST = "room-handover"
-const CHANNEL_LOCK_RELEASED_PREFIX = "handover-lock-released:"
-const CHANNEL_READY_PREFIX = "handover-ready:"
+const schema = createTLSchema({ shapes: { ...defaultShapeSchemas } })
 
-// --- Unique Pod Identity ---
-// Ensures every pod instance has a unique ID, preventing "Split Brain"
-const BASE_POD_NAME = process.env.HOSTNAME || "TldrawRoomManagerPod"
-const POD_NAME = `${BASE_POD_NAME}-${randomUUID().slice(0, 8)}`
-
-console.log(`[RoomManager] Pod identity: ${POD_NAME}`)
-
-// --- Interfaces ---
 interface TldrawWebSocket extends WebSocket {
   sessionId: string
   roomId: string
-  isAlive: boolean
 }
 
-interface HandoverRequest {
-  roomId: string
-  targetPodId: string
-}
-
-const schema = createTLSchema({
-  shapes: { ...defaultShapeSchemas },
-})
-
-// --- Redis Setup ---
-const REDIS_URL = process.env.REDIS_URL || "redis://localhost:6379"
-
-// 1. Client for standard commands (SET, GET, DEL)
-const redisClient = createClient({ url: REDIS_URL })
-// 2. Client dedicated to room-handover subscriptions
-const subClient = redisClient.duplicate()
-// 3. Client for publishing
-const pubClient = redisClient.duplicate()
-// 4. Client for dynamic handover-complete subscriptions (separate to avoid blocking)
-const handoverSubClient = redisClient.duplicate()
-
-redisClient.on("error", (err) => console.error("[Redis] Client Error:", err))
-subClient.on("error", (err) => console.error("[Redis] Sub Client Error:", err))
-pubClient.on("error", (err) => console.error("[Redis] Pub Client Error:", err))
-handoverSubClient.on("error", (err) => console.error("[Redis] Handover Sub Client Error:", err))
-;(async () => {
-  try {
-    await Promise.all([
-      redisClient.connect(),
-      subClient.connect(),
-      pubClient.connect(),
-      handoverSubClient.connect(),
-    ])
-    console.log("[Redis] All clients connected successfully")
-  } catch (err) {
-    console.error("[Redis] CRITICAL: Failed to connect on startup:", err)
-    process.exit(1)
+/**
+ * Refusal carrying the correction. The worker answers the upgrade with 409 and
+ * `x-room-owner`, so a router in mode B can retry against the named address on
+ * the same client connection instead of the client seeing an error.
+ */
+export class NotOwnerError extends Error {
+  constructor(readonly owner: string | null) {
+    super("NOT_OWNER")
+    this.name = "NotOwnerError"
   }
-})()
-
-const lockKey = (roomId: string) => `lock:room:${roomId}`
-
-// Redis has no compare-and-set, so renewing and releasing a Room Lock run as
-// Lua: read the owner and act on it in one atomic step.
-//
-// `SET key POD_NAME EX n XX` is NOT good enough for renewal. XX asserts only
-// that the key exists, not that we still hold it — so if our lease lapses and
-// another pod acquires the Room, an XX renewal overwrites their lock with our
-// name and both pods believe they own the Room. Likewise a bare DEL on release
-// can drop a lock that now belongs to someone else.
-const RENEW_IF_OWNER = `
-  if redis.call('GET', KEYS[1]) == ARGV[1] then
-    return redis.call('PEXPIRE', KEYS[1], ARGV[2])
-  else
-    return 0
-  end`
-
-const RELEASE_IF_OWNER = `
-  if redis.call('GET', KEYS[1]) == ARGV[1] then
-    return redis.call('DEL', KEYS[1])
-  else
-    return 0
-  end`
-
-/** Extends our lease. False means the lock is gone or owned by another pod. */
-async function renewLockIfOwner(roomId: string): Promise<boolean> {
-  const result = await redisClient.eval(RENEW_IF_OWNER, {
-    keys: [lockKey(roomId)],
-    arguments: [POD_NAME, String(LOCK_TIMEOUT_SEC * 1000)],
-  })
-  return result === 1
-}
-
-/** Releases our lease. False means it had already lapsed or been taken over. */
-async function releaseLockIfOwner(roomId: string): Promise<boolean> {
-  const result = await redisClient.eval(RELEASE_IF_OWNER, {
-    keys: [lockKey(roomId)],
-    arguments: [POD_NAME],
-  })
-  return result === 1
 }
 
 class RoomManager {
-  private activeRooms = new Map<string, TLSocketRoom<TLRecord, void>>()
-  private roomHeartbeats = new Map<string, NodeJS.Timeout>()
-  // Track raw WebSockets for handover (need to close with 1013)
-  private roomSockets = new Map<string, Set<TldrawWebSocket>>()
-  // Throttled snapshot writers, kept so they can be cancelled the moment we
-  // stop owning a Room — a pending trailing save would otherwise land on top
-  // of the next owner's state.
-  private roomSaves = new Map<string, { cancel: () => void }>()
+  /** Owner Identity: the same string that appears in members/ and owners/. */
+  readonly addr = defaultAdvertiseAddr()
 
+  private activeRooms = new Map<string, TLSocketRoom<TLRecord, void>>()
+  private roomSockets = new Map<string, Set<TldrawWebSocket>>()
+  // One timer for the whole worker, not one per Room: the re-check is a single
+  // batched question to the router now, so per-Room timers would only fan a
+  // single request back out into many.
+  private recheckTimer?: NodeJS.Timeout
+  // Kept so a pending trailing save can be cancelled the moment we stop owning
+  // a Room; it would otherwise land on top of the next owner's state.
+  private roomSaves = new Map<string, { cancel: () => void }>()
   private loadingRooms = new Map<string, Promise<TLSocketRoom<TLRecord, void>>>()
 
-  constructor() {
-    this.initHandoverListener()
+  // Ownership says a worker MAY hold a Room; being able to persist is what
+  // makes that worth anything. With the S3 registry those were the same
+  // question, because the heartbeat and the Snapshot went to the same bucket.
+  // With the Redis registry they are not: a worker cut off from S3 keeps its
+  // ownership records happily and accumulates edits it can never save. So the
+  // capability is tested directly rather than inferred from a shared channel.
+  private consecutiveSaveFailures = 0
+  private canPersist = true
+
+  readonly membership = new Membership(
+    this.addr,
+    () => this.roomCount(),
+    () => void this.recheckAll(),
+  )
+
+  roomCount(): number {
+    return this.activeRooms.size
   }
 
-  // --- Handover Listener ---
-  // Listens for requests from other pods wanting to take over a room
-  private async initHandoverListener() {
-    await subClient.subscribe("room-handover", async (message) => {
-      try {
-        const request: HandoverRequest = JSON.parse(message)
-        console.log(
-          `[Handover] Received request for room ${request.roomId} from ${request.targetPodId}`,
-        )
-
-        // Only release if WE actually have the room active in memory
-        if (this.activeRooms.has(request.roomId)) {
-          console.log(`[Handover] We own room ${request.roomId}, initiating release...`)
-          await this.releaseRoom(request.roomId)
-          console.log(`[Handover] Room ${request.roomId} released successfully`)
-        } else {
-          console.log(`[Handover] We don't own room ${request.roomId}, ignoring`)
-        }
-      } catch (err) {
-        console.error("[Handover] Failed to process message:", err)
-      }
-    })
-  }
-
-  private async releaseRoom(roomId: string) {
-    const room = this.activeRooms.get(roomId)
-    if (!room) return
-
-    const lockReleasedChannel = `${CHANNEL_LOCK_RELEASED_PREFIX}${roomId}`
-    const readyChannel = `${CHANNEL_READY_PREFIX}${roomId}`
-    const sockets = this.roomSockets.get(roomId)
-    const socketCount = sockets?.size || 0
-
-    console.log(`[Handover] Phase 1: Releasing room ${roomId} with ${socketCount} connected users`)
-
-    try {
-      const snapshot = room.getCurrentSnapshot()
-      if (snapshot) {
-        await persistRoomSnapshot(roomId, snapshot)
-        console.log(`[Handover] Saved snapshot for room ${roomId}`)
-      }
-
-      this.dropRoom(roomId)
-
-      if (await releaseLockIfOwner(roomId)) {
-        console.log(`[Handover] Released lock for room ${roomId}`)
-      } else {
-        // Our lease had already lapsed and someone else holds the Room now.
-        // Deleting the key here would drop *their* lock.
-        console.warn(`[Handover] Lock for room ${roomId} was no longer ours to release`)
-      }
-
-      const readyWaiter = this.waitForReadySignal(readyChannel)
-
-      await pubClient.publish(
-        lockReleasedChannel,
-        JSON.stringify({
-          roomId,
-          previousOwner: POD_NAME,
-          timestamp: Date.now(),
-        }),
-      )
-      console.log(
-        `[Handover] Phase 2: Published lock-released, waiting for new owner ready signal...`,
-      )
-
-      const isReady = await readyWaiter
-
-      if (isReady) {
-        console.log(
-          `[Handover] New owner ready for room ${roomId}, closing ${socketCount} connections`,
-        )
-      } else {
-        console.log(
-          `[Handover] Timeout waiting for ready signal for room ${roomId}, closing connections anyway`,
-        )
-      }
-
-      if (sockets && sockets.size > 0) {
-        for (const ws of sockets) {
-          try {
-            ws.close(1013, "Room migrated to another server, please reconnect")
-          } catch (e) {
-            // Socket may already be closed
-          }
-        }
-        this.roomSockets.delete(roomId)
-      }
-    } catch (err) {
-      console.error(`[Handover] Error releasing room ${roomId}:`, err)
-      this.forceCloseSockets(roomId)
-    }
-  }
-
-  private waitForReadySignal(channel: string): Promise<boolean> {
-    return new Promise((resolve) => {
-      let resolved = false
-      let timeoutId: NodeJS.Timeout
-
-      const messageHandler = () => {
-        if (!resolved) {
-          resolved = true
-          clearTimeout(timeoutId)
-          handoverSubClient.unsubscribe(channel).catch(() => {})
-          resolve(true)
-        }
-      }
-
-      handoverSubClient
-        .subscribe(channel, messageHandler)
-        .then(() => {
-          timeoutId = setTimeout(() => {
-            if (!resolved) {
-              resolved = true
-              handoverSubClient.unsubscribe(channel).catch(() => {})
-              resolve(false)
-            }
-          }, HANDOVER_READY_TIMEOUT_MS)
-        })
-        .catch(() => {
-          resolve(false)
-        })
-    })
+  /** False once this worker has proved it cannot save. Fails the liveness probe. */
+  public get healthy(): boolean {
+    return this.canPersist
   }
 
   /**
-   * Extend our claim on a Room, and give the Room up if the claim is gone.
-   *
-   * A renewal only fails when another pod has become the Room Owner, which
-   * means our in-memory copy is no longer authoritative. Persisting it here
-   * would overwrite the new owner's Snapshot, so the Room is dropped without
-   * saving and its Sessions are told to reconnect — they will land on whoever
-   * holds the lock now.
+   * Claim the record if it is absent or vacant, serve if it names us, refuse if
+   * it names someone else. One code path that works with a router in front and
+   * in bare `yarn dev` with no router at all.
    */
-  private async renewRoomLock(roomId: string) {
-    let renewed: boolean
+  public async getOrPrepareRoom(
+    roomId: string,
+  ): Promise<{ room: TLSocketRoom<TLRecord, void>; isNewRoom: boolean }> {
+    const existing = this.activeRooms.get(roomId)
+    if (existing) return { room: existing, isNewRoom: false }
+
+    const loading = this.loadingRooms.get(roomId)
+    if (loading) return { room: await loading, isNewRoom: false }
+
+    const loadPromise = (async () => {
+      await this.claimOwnership(roomId)
+      const room = await this.createRoom(roomId)
+      this.activeRooms.set(roomId, room)
+      activeRoomsGauge.inc()
+      this.startRecheckLoop()
+      return room
+    })()
+
+    this.loadingRooms.set(roomId, loadPromise)
     try {
-      renewed = await renewLockIfOwner(roomId)
-    } catch (err) {
-      // A Redis blip is not evidence that we lost the Room; the lease still has
-      // half its life left, so keep serving and retry on the next tick.
-      console.error(`[Lock] Failed to renew lock for room ${roomId}:`, err)
+      return { room: await loadPromise, isNewRoom: true }
+    } finally {
+      this.loadingRooms.delete(roomId)
+    }
+  }
+
+  private async claimOwnership(roomId: string): Promise<void> {
+    const record = await readOwner(roomId)
+
+    if (record?.owner === this.addr) return
+    if (record?.owner) throw new NotOwnerError(record.owner)
+
+    // Absent record claims with "must not exist"; a vacated one reallocates
+    // against its etag. `owner: null` and "no record" mean the same to a
+    // reader, but not to a conditional write.
+    const result = await casOwner(roomId, record ? record.etag : null, this.addr)
+    if (result === "ok") {
+      // An existing record belonged to a dead or drained owner; an absent one is
+      // a Room nobody has held before. The dashboard cares about the difference.
+      if (record) roomReclaimsCounter.inc()
+      else roomClaimsCounter.inc()
       return
     }
 
-    if (renewed) return
-
-    console.error(`[Lock] Lost lock for room ${roomId} to another pod, giving up the room`)
-    lockLostCounter.inc()
-    this.dropRoom(roomId)
-    this.forceCloseSockets(roomId)
+    roomCasConflictsCounter.inc()
+    const winner = await readOwner(roomId)
+    if (winner?.owner === this.addr) return
+    throw new NotOwnerError(winner?.owner ?? null)
   }
 
   /**
-   * Stop owning a Room in memory: cancel its pending Snapshot write, stop its
-   * heartbeat and forget it. Does not touch the Room Lock or its Sessions —
-   * callers decide what those deserve.
+   * Re-read the record. If it moved, the in-memory copy is no longer
+   * authoritative: drop it *without saving* and tell Sessions to reconnect.
+   * A read failure is not a loss — the record is durable and a blip proves
+   * nothing, so keep serving and try again next tick.
    */
-  private dropRoom(roomId: string): boolean {
+  private async recheckOwnership(roomId: string): Promise<void> {
+    if (!this.activeRooms.has(roomId)) return
+
+    let record
+    try {
+      record = await readOwner(roomId)
+    } catch (error) {
+      console.error(`[Ownership] Re-read failed for room ${roomId}, still serving:`, error)
+      return
+    }
+
+    if (record?.owner === this.addr) return
+
+    this.giveUpRoom(roomId, `record names ${record?.owner ?? "nobody"}`)
+  }
+
+  private startRecheckLoop(): void {
+    if (this.recheckTimer) return
+    this.recheckTimer = setInterval(() => void this.recheckAll(), OWNERSHIP_RECHECK_INTERVAL_MS)
+  }
+
+  /**
+   * Confirm we still own what we are holding.
+   *
+   * This is a **backstop**, not the mechanism. The router pushes
+   * `/internal/lost` the moment it takes a Room away, so this only catches
+   * pushes that went missing — which is why it can run every 30s rather than
+   * every 5s, and why moving it off the bucket was the single largest saving in
+   * the request bill.
+   *
+   * One batched question to the router when there is one; a direct read per
+   * Room otherwise, so bare `yarn dev` with no router still works.
+   */
+  public async recheckAll(): Promise<void> {
+    const roomIds = [...this.activeRooms.keys()]
+    if (roomIds.length === 0) return
+
+    const routerUrl = process.env.ROUTER_INTERNAL_URL
+    if (routerUrl) {
+      const lost = await this.askRouterWhatWeLost(routerUrl, roomIds)
+      // null means we could not get an answer. A blip is not evidence of loss,
+      // so keep serving and ask again next tick.
+      if (lost === null) return
+      for (const roomId of lost) this.giveUpRoom(roomId, "router says it moved")
+      return
+    }
+
+    await Promise.all(roomIds.map((roomId) => this.recheckOwnership(roomId)))
+  }
+
+  private async askRouterWhatWeLost(
+    routerUrl: string,
+    roomIds: string[],
+  ): Promise<string[] | null> {
+    try {
+      const response = await fetch(`${routerUrl}/internal/ownership`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ addr: this.addr, roomIds }),
+        signal: AbortSignal.timeout(3000),
+      })
+      if (!response.ok) {
+        // Loudly: a persistent non-OK here means the backstop is silently doing
+        // nothing, which looks exactly like everything being fine.
+        console.error(
+          `[Ownership] Router re-check answered ${response.status} at ${routerUrl}; ` +
+            "no rooms were checked",
+        )
+        return null
+      }
+      const body = (await response.json()) as { lost?: string[] }
+      return Array.isArray(body.lost) ? body.lost : null
+    } catch (error) {
+      console.error("[Ownership] Router re-check failed, still serving:", error)
+      return null
+    }
+  }
+
+  /**
+   * The router told us, unprompted, that it took a Room from us. Acting on it
+   * immediately is the whole point: the alternative is serving state we no
+   * longer own until the next backstop poll.
+   */
+  public onOwnershipLost(roomId: string): void {
+    if (!this.activeRooms.has(roomId)) return
+    this.giveUpRoom(roomId, "router reallocated it")
+  }
+
+  /** Drop without saving — our copy is no longer authoritative. */
+  private giveUpRoom(roomId: string, why: string): void {
+    console.error(`[Ownership] Giving up room ${roomId}: ${why}`)
+    roomOwnershipLostCounter.inc()
+    this.dropRoom(roomId)
+    this.closeSockets(roomId)
+  }
+
+  /**
+   * Persist a Room, but only after confirming the record still names us. A Room
+   * whose ownership moved must not clobber the new owner's Snapshot.
+   */
+  public async saveRoom(roomId: string): Promise<void> {
+    const room = this.activeRooms.get(roomId)
+    if (!room) return
+
+    let record
+    try {
+      record = await readOwner(roomId)
+    } catch (error) {
+      console.error(`[Snapshot] Ownership check failed for room ${roomId}, skipping save:`, error)
+      return
+    }
+    if (record?.owner !== this.addr) return
+
+    const snapshot = room.getCurrentSnapshot()
+    if (!snapshot) return
+
+    if (await persistRoomSnapshot(roomId, snapshot)) {
+      this.consecutiveSaveFailures = 0
+      return
+    }
+
+    this.consecutiveSaveFailures++
+    console.error(
+      `[Snapshot] Write failed for room ${roomId} ` +
+        `(${this.consecutiveSaveFailures}/${MAX_CONSECUTIVE_SAVE_FAILURES} consecutive)`,
+    )
+    if (this.consecutiveSaveFailures >= MAX_CONSECUTIVE_SAVE_FAILURES) {
+      await this.surrenderRooms()
+    }
+  }
+
+  /**
+   * Give up everything, because we cannot save it.
+   *
+   * Ownership is vacated rather than merely dropped: the record is written
+   * through the registry, which is still reachable in the case this exists for
+   * — Redis up, S3 down — so another worker can take the Rooms immediately
+   * instead of waiting out a TTL. Sessions are closed `1013` and reconnect
+   * onto a worker that can actually persist.
+   *
+   * The worker then fails its liveness probe. There is no way back from here
+   * under its own power, and a restart is the honest response: holding Rooms
+   * we cannot write is strictly worse than not running.
+   */
+  private async surrenderRooms(): Promise<void> {
+    this.canPersist = false
+    console.error(
+      `[Snapshot] Cannot persist; surrendering ${this.activeRooms.size} rooms and failing health`,
+    )
+
+    await Promise.allSettled(
+      [...this.activeRooms.keys()].map(async (roomId) => {
+        // Deliberately no saveRoom() here: saving is the thing that is broken.
+        await this.vacate(roomId)
+        this.dropRoom(roomId)
+        this.closeSockets(roomId)
+      }),
+    )
+  }
+
+  public connectSocket(
+    room: TLSocketRoom<TLRecord, void>,
+    roomId: string,
+    ws: WebSocket,
+    sessionId: string,
+    isNewRoom: boolean,
+  ): void {
+    const socket = ws as TldrawWebSocket
+    socket.sessionId = sessionId
+    socket.roomId = roomId
+
+    console.log(
+      isNewRoom
+        ? `[Room] User ${sessionId} created new room ${roomId}`
+        : `[Room] User ${sessionId} joined room ${roomId}`,
+    )
+
+    room.handleSocketConnect({ socket, sessionId })
+
+    if (!this.roomSockets.has(roomId)) this.roomSockets.set(roomId, new Set())
+    this.roomSockets.get(roomId)!.add(socket)
+
+    socket.on("close", () => {
+      this.roomSockets.get(roomId)?.delete(socket)
+      this.activeRooms.get(roomId)?.handleSocketClose(sessionId)
+    })
+  }
+
+  /**
+   * Drain. The caller must already have deregistered from members/ and waited
+   * for routers to notice — see the shutdown handler in index.ts. Here we only
+   * do the per-Room part, and the ordering is load-bearing: the Snapshot must
+   * land before ownership is given up, or the next owner can claim the Room and
+   * load a stale Snapshot while our write is still in flight.
+   */
+  public async drain(): Promise<void> {
+    console.log(`[RoomManager] Draining ${this.activeRooms.size} rooms`)
+
+    await Promise.allSettled(
+      [...this.activeRooms.keys()].map(async (roomId) => {
+        await this.saveRoom(roomId)
+        await this.vacate(roomId)
+        this.dropRoom(roomId)
+        this.closeSockets(roomId)
+      }),
+    )
+
+    console.log("[RoomManager] Drain complete")
+  }
+
+  /** CAS to vacant. Never a delete: an unconditional one is a split-brain. */
+  private async vacate(roomId: string): Promise<void> {
+    try {
+      const record = await readOwner(roomId)
+      if (record?.owner !== this.addr) return
+      await casOwner(roomId, record.etag, null)
+    } catch (error) {
+      console.error(`[Ownership] Failed to vacate room ${roomId}:`, error)
+    }
+  }
+
+  /** Forget a Room in memory. Touches neither the record nor its Sessions. */
+  private dropRoom(roomId: string): void {
     const wasActive = this.activeRooms.delete(roomId)
 
-    const heartbeat = this.roomHeartbeats.get(roomId)
-    if (heartbeat) clearInterval(heartbeat)
-    this.roomHeartbeats.delete(roomId)
+    // Last Room gone: stop asking about an empty list.
+    if (this.activeRooms.size === 0 && this.recheckTimer) {
+      clearInterval(this.recheckTimer)
+      this.recheckTimer = undefined
+    }
 
     // A trailing throttled save would otherwise fire seconds from now and put
     // our stale state on top of the next owner's.
@@ -308,343 +376,44 @@ class RoomManager {
     this.roomSaves.delete(roomId)
 
     if (wasActive) activeRoomsGauge.dec()
-    return wasActive
   }
 
-  private forceCloseSockets(roomId: string) {
+  private closeSockets(roomId: string): void {
     const sockets = this.roomSockets.get(roomId)
-    if (sockets && sockets.size > 0) {
-      console.log(`[Handover] Force closing ${sockets.size} sockets for room ${roomId}`)
-      for (const ws of sockets) {
-        try {
-          ws.close(1013, "Room migrated to another server, please reconnect")
-        } catch (e) {
-          // Socket may already be closed
-        }
-      }
-      this.roomSockets.delete(roomId)
-    }
-  }
-
-  private async subscribeToLockReleased(
-    roomId: string,
-  ): Promise<{ wait: () => Promise<boolean>; cleanup: () => void }> {
-    const channel = `${CHANNEL_LOCK_RELEASED_PREFIX}${roomId}`
-    let resolved = false
-    let resolvePromise: (value: boolean) => void
-    let timeoutId: NodeJS.Timeout
-
-    const resultPromise = new Promise<boolean>((resolve) => {
-      resolvePromise = resolve
-    })
-
-    const messageHandler = () => {
-      if (!resolved) {
-        resolved = true
-        clearTimeout(timeoutId)
-        console.log(`[Handover] Received lock-released for room ${roomId}`)
-        resolvePromise(true)
+    if (!sockets?.size) return
+    for (const socket of sockets) {
+      try {
+        socket.close(1013, RECONNECT_REASON)
+      } catch {
+        // Already closed.
       }
     }
-
-    await handoverSubClient.subscribe(channel, messageHandler)
-
-    const cleanup = () => {
-      if (!resolved) {
-        resolved = true
-        clearTimeout(timeoutId)
-      }
-      handoverSubClient.unsubscribe(channel).catch(() => {})
-    }
-
-    const wait = (): Promise<boolean> => {
-      timeoutId = setTimeout(() => {
-        if (!resolved) {
-          resolved = true
-          console.log(`[Handover] Timeout waiting for lock-released for room ${roomId}`)
-          handoverTimeoutCounter.inc()
-          handoverSubClient.unsubscribe(channel).catch(() => {})
-          resolvePromise(false)
-        }
-      }, HANDOVER_TIMEOUT_MS)
-
-      return resultPromise
-    }
-
-    return { wait, cleanup }
-  }
-
-  private async acquireLockWithHandover(
-    roomId: string,
-  ): Promise<{ acquired: boolean; shouldSignalReady: boolean }> {
-    const startTime = Date.now()
-
-    const lockAcquired = await redisClient.set(lockKey(roomId), POD_NAME, {
-      EX: LOCK_TIMEOUT_SEC,
-      NX: true,
-    })
-
-    if (lockAcquired) {
-      console.log(`[Lock] Acquired lock for room ${roomId} (direct)`)
-      return { acquired: true, shouldSignalReady: false }
-    }
-
-    const currentOwner = await redisClient.get(lockKey(roomId))
-
-    if (currentOwner === POD_NAME) {
-      console.log(`[Lock] We already own lock for room ${roomId}`)
-      return { acquired: true, shouldSignalReady: false }
-    }
-
-    if (!currentOwner) {
-      const retryAcquired = await redisClient.set(lockKey(roomId), POD_NAME, {
-        EX: LOCK_TIMEOUT_SEC,
-        NX: true,
-      })
-      if (retryAcquired) {
-        console.log(`[Lock] Acquired lock for room ${roomId} (after expiry)`)
-        return { acquired: true, shouldSignalReady: false }
-      }
-    }
-
-    console.log(`[Lock] Room ${roomId} owned by ${currentOwner}, initiating two-phase handover...`)
-    handoverRequestsCounter.inc()
-
-    const subscription = await this.subscribeToLockReleased(roomId)
-
-    await pubClient.publish(
-      CHANNEL_HANDOVER_REQUEST,
-      JSON.stringify({
-        roomId,
-        targetPodId: POD_NAME,
-      }),
-    )
-
-    const lockReleased = await subscription.wait()
-    const duration = (Date.now() - startTime) / 1000
-    handoverDurationHistogram.observe(duration)
-
-    if (lockReleased) {
-      console.log(
-        `[Lock] Lock released signal received for room ${roomId} in ${duration.toFixed(2)}s`,
-      )
-    } else {
-      console.log(
-        `[Lock] Timeout waiting for lock release for room ${roomId}, attempting acquisition anyway...`,
-      )
-    }
-
-    const retryAcquired = await redisClient.set(lockKey(roomId), POD_NAME, {
-      EX: LOCK_TIMEOUT_SEC,
-      NX: true,
-    })
-
-    if (retryAcquired) {
-      console.log(`[Lock] Acquired lock for room ${roomId} after handover`)
-      handoverSuccessCounter.inc()
-      return { acquired: true, shouldSignalReady: true }
-    }
-
-    console.log(`[Lock] Failed to acquire lock for room ${roomId} after handover`)
-    return { acquired: false, shouldSignalReady: false }
-  }
-
-  private async signalReady(roomId: string) {
-    const readyChannel = `${CHANNEL_READY_PREFIX}${roomId}`
-    await pubClient.publish(
-      readyChannel,
-      JSON.stringify({
-        roomId,
-        newOwner: POD_NAME,
-        timestamp: Date.now(),
-      }),
-    )
-    console.log(`[Handover] Published ready signal for room ${roomId}`)
-  }
-
-  /**
-   * Get or create a room. This is async and should be called BEFORE
-   * accepting the WebSocket connection to avoid race conditions.
-   *
-   * @returns The room and whether this call created it
-   */
-  public async getOrPrepareRoom(
-    roomId: string,
-  ): Promise<{ room: TLSocketRoom<TLRecord, void>; isNewRoom: boolean }> {
-    // 1. Check if room already exists
-    let room = this.activeRooms.get(roomId)
-    if (room) {
-      return { room, isNewRoom: false }
-    }
-
-    // 2. Check if room is currently being loaded (deduplication)
-    if (this.loadingRooms.has(roomId)) {
-      room = await this.loadingRooms.get(roomId)
-      if (room) {
-        return { room, isNewRoom: false }
-      }
-      throw new Error("ROOM_LOAD_FAILED")
-    }
-
-    // 3. Create the room
-    const loadPromise = (async () => {
-      const { acquired, shouldSignalReady } = await this.acquireLockWithHandover(roomId)
-
-      if (!acquired) {
-        throw new Error("LOCK_ACQUISITION_FAILED")
-      }
-
-      const newRoom = await this.createRoom(roomId)
-      this.activeRooms.set(roomId, newRoom)
-      activeRoomsGauge.inc()
-
-      const lockHeartbeat = setInterval(() => {
-        void this.renewRoomLock(roomId)
-      }, HEARTBEAT_INTERVAL_MS)
-
-      this.roomHeartbeats.set(roomId, lockHeartbeat)
-
-      if (shouldSignalReady) {
-        await this.signalReady(roomId)
-      }
-
-      return newRoom
-    })()
-
-    // Store the promise so concurrent requests can wait
-    this.loadingRooms.set(roomId, loadPromise)
-
-    try {
-      room = await loadPromise
-      return { room, isNewRoom: true }
-    } finally {
-      this.loadingRooms.delete(roomId)
-    }
-  }
-
-  /**
-   * Connect a WebSocket to an existing room. This should be called
-   * AFTER the WebSocket is accepted and the room is ready.
-   * This is synchronous - the room must already exist.
-   */
-  public connectSocket(
-    room: TLSocketRoom<TLRecord, void>,
-    roomId: string,
-    ws: WebSocket,
-    sessionId: string,
-    isNewRoom: boolean,
-  ) {
-    const safeWs = ws as TldrawWebSocket
-    safeWs.sessionId = sessionId
-    safeWs.roomId = roomId
-    safeWs.isAlive = true
-
-    safeWs.on("pong", () => {
-      safeWs.isAlive = true
-    })
-
-    const currentSockets = this.roomSockets.get(roomId)?.size ?? 0
-    if (isNewRoom) {
-      console.log(`[Room] User ${sessionId} created new room ${roomId}`)
-    } else {
-      console.log(
-        `[Room] User ${sessionId} joining existing room ${roomId} (${currentSockets} users already connected)`,
-      )
-    }
-
-    room.handleSocketConnect({ socket: safeWs, sessionId })
-
-    // Track raw socket for handover (need to close with 1013)
-    this.trackSocket(roomId, safeWs)
-  }
-
-  // --- Graceful Shutdown ---
-  public async shutdown() {
-    console.log(`[RoomManager] Shutting down, saving ${this.activeRooms.size} rooms...`)
-
-    const rooms = [...this.activeRooms]
-    const promises = rooms.map(async ([roomId, room]) => {
-      const snapshot = room.getCurrentSnapshot()
-      if (snapshot) {
-        // The Snapshot must land before the lock goes, or the next owner can
-        // acquire the Room and load a stale Snapshot while our write is still
-        // in flight — and then our write lands on top of theirs.
-        await persistRoomSnapshot(roomId, snapshot)
-      }
-      this.dropRoom(roomId)
-      await releaseLockIfOwner(roomId)
-    })
-
-    await Promise.allSettled(promises)
-    console.log("[RoomManager] All rooms saved, closing Redis connections...")
-
-    await Promise.all([
-      redisClient.quit(),
-      subClient.quit(),
-      pubClient.quit(),
-      handoverSubClient.quit(),
-    ])
-    console.log("[RoomManager] Shutdown complete")
-  }
-
-  /**
-   * Track raw WebSocket for handover purposes (need to close with 1013).
-   * Also notifies the room when socket closes, which triggers onSessionRemoved.
-   */
-  private trackSocket(roomId: string, ws: TldrawWebSocket) {
-    if (!this.roomSockets.has(roomId)) {
-      this.roomSockets.set(roomId, new Set())
-    }
-    this.roomSockets.get(roomId)!.add(ws)
-
-    ws.on("close", () => {
-      this.roomSockets.get(roomId)?.delete(ws)
-      // Notify room of socket close - this triggers onSessionRemoved
-      const room = this.activeRooms.get(roomId)
-      if (room) {
-        room.handleSocketClose(ws.sessionId)
-      }
-    })
+    this.roomSockets.delete(roomId)
   }
 
   private async createRoom(roomId: string): Promise<TLSocketRoom<TLRecord, void>> {
     const initialSnapshot = await fetchRoomSnapshot(roomId)
-    let room: TLSocketRoom<TLRecord, void>
 
-    const saveToS3Throttled = throttle(() => {
-      // Only the Room Owner may write; dropRoom() cancels this, but a save
-      // already queued before that can still be in flight.
-      if (room && this.activeRooms.get(roomId) === room) {
-        const snapshot = room.getCurrentSnapshot()
-        if (snapshot) persistRoomSnapshot(roomId, snapshot)
-      }
-    }, THROTTLE_SAVE_MS)
+    const saveThrottled = throttle(() => void this.saveRoom(roomId), THROTTLE_SAVE_MS)
+    this.roomSaves.set(roomId, saveThrottled)
 
-    this.roomSaves.set(roomId, saveToS3Throttled)
-
-    room = new TLSocketRoom<TLRecord, void>({
+    return new TLSocketRoom<TLRecord, void>({
       schema,
       initialSnapshot: initialSnapshot || undefined,
-      onDataChange: () => saveToS3Throttled(),
+      onDataChange: () => saveThrottled(),
       onSessionRemoved: (_room, { sessionId, numSessionsRemaining }) => {
-        console.log(
-          `[Room] Session ${sessionId} removed from ${roomId}, ${numSessionsRemaining} remaining`,
-        )
-        if (numSessionsRemaining === 0) {
-          console.log(`[Room] No sessions remaining, cleaning up room ${roomId}`)
-          this.cleanupRoom(roomId)
-        }
+        console.log(`[Room] Session ${sessionId} left ${roomId}, ${numSessionsRemaining} remaining`)
+        if (numSessionsRemaining === 0) void this.cleanupRoom(roomId)
       },
     })
-    return room
   }
 
-  private cleanupRoom(roomId: string) {
+  /** Last Session left: persist, vacate so another worker can take it, forget. */
+  private async cleanupRoom(roomId: string): Promise<void> {
+    await this.saveRoom(roomId)
+    await this.vacate(roomId)
     this.dropRoom(roomId)
     this.roomSockets.delete(roomId)
-    releaseLockIfOwner(roomId).catch((err) =>
-      console.error(`[Lock] Failed to release lock for room ${roomId}:`, err),
-    )
   }
 }
 

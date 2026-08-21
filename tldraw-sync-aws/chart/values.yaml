@@ -5,18 +5,40 @@ image:
   tag: local
   pullPolicy: IfNotPresent
 
-ingress:
-  enabled: true
-  host: aws.localhost
+# Envoy + room-router as a sidecar pair. This REPLACES ingress-nginx for the
+# AWS demo rather than sitting behind it - see ADR 0005. There is no Ingress:
+# fronting Envoy with nginx locally would demonstrate exactly the added tier
+# the design says does not exist.
+router:
+  replicaCount: 2
+  # Published by the Service. Not :80, which k3s svclb has already bound for
+  # the nginx controller still serving the GCP demo and Grafana.
+  port: 8081
+  envoyImage: envoyproxy/envoy:v1.34-latest
+
+# See the design doc for why 2s/8s and not 2s/6s. MEMBER_TTL is a
+# false-positive threshold, not just a detection latency.
+timings:
+  heartbeatIntervalMs: 2000
+  memberPollIntervalMs: 2000
+  memberTtlMs: 8000
+  # Backstop only: the router pushes losses immediately.
+  ownershipRecheckIntervalMs: 30000
 
 env:
   s3BucketName: tldraw-test-bucket
   awsRegion: us-east-1
 
-# In-cluster Redis for local use. On EKS set enabled: false and url to the
-# ElastiCache endpoint (rediss:// if TLS).
+# Where ownership and membership live. "s3" keeps everything in the bucket and
+# needs no other service; "redis" is the same design with a different store —
+# cheaper and lower latency, but liveness and the ability to persist a Snapshot
+# stop sharing a channel, which is what the persistence health check pays for.
+registry:
+  backend: s3
+
 redis:
-  enabled: true
+  enabled: false
+  image: redis:7-alpine
   url: ""
 
 # In-cluster LocalStack standing in for S3. On EKS set enabled: false; the AWS

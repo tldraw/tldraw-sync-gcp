@@ -9,6 +9,12 @@ ports:
   - port: 8080:80
     nodeFilters:
       - loadbalancer
+  # host 8081 -> Envoy Service for the AWS demo. It needs a port of its own
+  # rather than :80, which k3s svclb has already bound for ingress-nginx.
+  # nginx still serves gcp.localhost and grafana.localhost on 8080.
+  - port: 8081:8081
+    nodeFilters:
+      - loadbalancer
 options:
   k3s:
     extraArgs:

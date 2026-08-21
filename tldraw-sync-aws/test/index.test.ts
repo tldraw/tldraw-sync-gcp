@@ -51,10 +51,36 @@ vi.mock("ws", () => ({
 
 const getOrPrepareRoom = vi.fn()
 const connectSocket = vi.fn()
-const shutdown = vi.fn()
+const drain = vi.fn()
+let workerHealthy = true
+const membershipStart = vi.fn()
+const membershipStop = vi.fn()
+
+class NotOwnerError extends Error {
+  constructor(readonly owner: string | null) {
+    super("NOT_OWNER")
+    this.name = "NotOwnerError"
+  }
+}
+
 vi.mock("../src/roomManager.js", () => ({
-  roomManager: { getOrPrepareRoom, connectSocket, shutdown },
+  NotOwnerError,
+  roomManager: {
+    getOrPrepareRoom,
+    connectSocket,
+    drain,
+    addr: "http://10.0.1.7:3001",
+    // Overridden per-test where the unhealthy branch is under test.
+    get healthy() {
+      return workerHealthy
+    },
+    membership: { start: membershipStart, stop: membershipStop },
+  },
 }))
+
+// The drain waits two router polls before giving any Room up; keep it short so
+// the shutdown tests do not sit on a real timer.
+vi.mock("../src/registry.js", () => ({ MEMBER_POLL_INTERVAL_MS: 1 }))
 
 const handleAssetUpload = vi.fn()
 const handleAssetDownload = vi.fn()
@@ -103,7 +129,7 @@ const upgradeHandler = fakeServer.listeners("upgrade")[0] as (
 ) => Promise<void>
 
 function fakeSocket() {
-  return { destroy: vi.fn() }
+  return { destroy: vi.fn(), end: vi.fn() }
 }
 
 function fakeWs(readyState = 1) {
@@ -284,23 +310,37 @@ describe("websocket upgrade", () => {
     expect(ws.ping).not.toHaveBeenCalled()
   })
 
-  // Losing the race for a Room Lock is an ordinary outcome under contention, not
-  // a fault — the client reconnects and lands on the new Room Owner. Logging it
-  // as an error would bury the failures that do matter.
-  it("refuses the upgrade quietly when the Room Lock cannot be acquired", async () => {
+  // Refusing a Room this worker does not own is an ordinary outcome, not a
+  // fault: the answer carries the correction so a router can retry against the
+  // real owner on the same client connection.
+  it("answers 409 with the owner's address so a router can retry", async () => {
     const socket = fakeSocket()
-    getOrPrepareRoom.mockRejectedValue(new Error("LOCK_ACQUISITION_FAILED"))
+    getOrPrepareRoom.mockRejectedValue(new NotOwnerError("http://10.0.1.8:3001"))
 
     await upgradeHandler(upgradeRequest("/api/connect/room-42?sessionId=s1"), socket, null)
 
-    expect(socket.destroy).toHaveBeenCalled()
+    const written = socket.end.mock.calls[0][0] as string
+    expect(written).toContain("HTTP/1.1 409 Conflict")
+    expect(written.toLowerCase()).toContain("x-room-owner: http://10.0.1.8:3001")
+    expect(socket.destroy).not.toHaveBeenCalled()
     expect(errorCounterInc).toHaveBeenCalledWith({ type: "websocket_error" })
     expect(errorSpy).not.toHaveBeenCalled()
   })
 
+  it("still answers 409 when the record names nobody, with no owner header", async () => {
+    const socket = fakeSocket()
+    getOrPrepareRoom.mockRejectedValue(new NotOwnerError(null))
+
+    await upgradeHandler(upgradeRequest("/api/connect/room-42?sessionId=s1"), socket, null)
+
+    const written = socket.end.mock.calls[0][0] as string
+    expect(written).toContain("HTTP/1.1 409 Conflict")
+    expect(written.toLowerCase()).not.toContain("x-room-owner")
+  })
+
   it("logs any other preparation failure", async () => {
     const socket = fakeSocket()
-    getOrPrepareRoom.mockRejectedValue(new Error("redis is down"))
+    getOrPrepareRoom.mockRejectedValue(new Error("the bucket is down"))
 
     await upgradeHandler(upgradeRequest("/api/connect/room-42?sessionId=s1"), socket, null)
 
@@ -310,7 +350,7 @@ describe("websocket upgrade", () => {
   })
 
   it("does not leave a connection counted when preparation fails", async () => {
-    getOrPrepareRoom.mockRejectedValue(new Error("LOCK_ACQUISITION_FAILED"))
+    getOrPrepareRoom.mockRejectedValue(new NotOwnerError("http://10.0.1.8:3001"))
 
     await upgradeHandler(upgradeRequest("/api/connect/room-42?sessionId=s1"), fakeSocket(), null)
 
@@ -320,6 +360,18 @@ describe("websocket upgrade", () => {
 })
 
 describe("http routes", () => {
+  // A worker that cannot write Snapshots should be restarted by the liveness
+  // probe, not left alive holding Rooms it can never save.
+  it("fails the health check once the worker cannot persist", () => {
+    workerHealthy = false
+    const res = { status: vi.fn().mockReturnThis(), send: vi.fn() }
+    routes.get("GET /api/health")!({}, res)
+
+    expect(res.status).toHaveBeenCalledWith(503)
+    expect(res.send).toHaveBeenCalledWith("cannot persist")
+    workerHealthy = true
+  })
+
   it("registers the endpoints the deployment targets probe and scrape", () => {
     expect([...routes.keys()]).toEqual(
       expect.arrayContaining([
@@ -369,35 +421,40 @@ describe("graceful shutdown", () => {
       cb?.()
       return fakeServer
     })
-    shutdown.mockImplementation(async () => {
-      order.push("shutdown")
+    membershipStop.mockImplementation(async () => {
+      order.push("deregister")
+    })
+    drain.mockImplementation(async () => {
+      order.push("drain")
     })
 
     await exitCodeFrom(signalHandlers.get("SIGTERM")!)
 
-    expect(order).toEqual(["close", "shutdown"])
+    // Deregistering before draining is what stops a router reallocating a Room
+    // straight back onto the worker that is shutting down.
+    expect(order).toEqual(["close", "deregister", "drain"])
   })
 
   it("exits cleanly once every room is persisted and unlocked", async () => {
-    shutdown.mockResolvedValue(undefined)
+    drain.mockResolvedValue(undefined)
 
     expect(await exitCodeFrom(signalHandlers.get("SIGTERM")!)).toBe(0)
-    expect(shutdown).toHaveBeenCalledTimes(1)
+    expect(drain).toHaveBeenCalledTimes(1)
   })
 
   // A failure here means Snapshots may not have landed. Exiting non-zero is what
   // tells the platform the instance did not drain cleanly — and it must not go
   // on to report success afterwards.
   it("exits non-zero when persisting rooms fails", async () => {
-    shutdown.mockRejectedValue(new Error("gcs unavailable"))
+    drain.mockRejectedValue(new Error("bucket unavailable"))
 
     expect(await exitCodeFrom(signalHandlers.get("SIGTERM")!)).toBe(1)
   })
 
   it("treats SIGINT the same as SIGTERM", async () => {
-    shutdown.mockResolvedValue(undefined)
+    drain.mockResolvedValue(undefined)
 
     expect(await exitCodeFrom(signalHandlers.get("SIGINT")!)).toBe(0)
-    expect(shutdown).toHaveBeenCalledTimes(1)
+    expect(drain).toHaveBeenCalledTimes(1)
   })
 })

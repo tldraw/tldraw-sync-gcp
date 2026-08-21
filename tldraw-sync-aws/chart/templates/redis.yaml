@@ -1,6 +1,8 @@
 {{- if .Values.redis.enabled }}
-# Room Locks + Handover pub/sub. Single instance, no persistence — the lock
-# and pub/sub state is ephemeral by design (10s TTL, renewed every 5s).
+# Opt-in only. The default backend is the bucket; this exists so the Redis
+# registry can be measured against it on the same cluster with the same drill.
+# No persistence: ownership records are rebuilt on demand, and losing them
+# costs a reclaim rather than any durable state.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -19,7 +21,7 @@ spec:
     spec:
       containers:
         - name: redis
-          image: redis:7-alpine
+          image: {{ .Values.redis.image | quote }}
           ports:
             - containerPort: 6379
           readinessProbe:

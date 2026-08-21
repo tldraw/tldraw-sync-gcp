@@ -1,51 +1,59 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { EventEmitter } from "events"
 import type { WebSocket } from "ws"
-import { bus, createClient } from "./helpers/fakeRedis.js"
 
-vi.mock("redis", () => ({ createClient }))
+const readOwner = vi.fn()
+const casOwner = vi.fn()
+
+vi.mock("../src/registry.js", () => ({
+  readOwner,
+  casOwner,
+  OWNERSHIP_RECHECK_INTERVAL_MS: 5000,
+}))
 
 const fetchRoomSnapshot = vi.fn()
 const persistRoomSnapshot = vi.fn()
 vi.mock("../src/s3Storage.js", () => ({ fetchRoomSnapshot, persistRoomSnapshot }))
 
-// Stands in for TLSocketRoom. Records connected sessions and exposes the
-// onSessionRemoved callback so tests can simulate clients leaving.
+const ME = "http://10.0.1.7:3001"
+const THEM = "http://10.0.1.8:3001"
+vi.mock("../src/membership.js", () => ({
+  defaultAdvertiseAddr: () => ME,
+  Membership: class {
+    constructor(
+      readonly addr: string,
+      readonly roomCount: () => number,
+      readonly onEvicted: () => void,
+    ) {}
+    start() {}
+    async stop() {}
+  },
+}))
+
+// Stands in for TLSocketRoom. Same shape as the pre-existing fake.
 class FakeRoom {
   static instances: FakeRoom[] = []
   sessions = new Set<string>()
-  closedSessions: string[] = []
   snapshot: unknown = { clock: 1, documents: [] }
-
   constructor(public config: Record<string, any>) {
     FakeRoom.instances.push(this)
   }
-
   getCurrentSnapshot() {
     return this.snapshot
   }
-
   handleSocketConnect({ sessionId }: { sessionId: string }) {
     this.sessions.add(sessionId)
   }
-
   handleSocketClose(sessionId: string) {
-    this.closedSessions.push(sessionId)
     this.sessions.delete(sessionId)
     this.config.onSessionRemoved(this, { sessionId, numSessionsRemaining: this.sessions.size })
   }
 }
-
 vi.mock("@tldraw/sync-core", () => ({ TLSocketRoom: FakeRoom }))
 
-const { roomManager } = await import("../src/roomManager.js")
+const { roomManager, NotOwnerError } = await import("../src/roomManager.js")
 
-const CHANNEL_HANDOVER_REQUEST = "room-handover"
-const lockReleasedChannel = (roomId: string) => `handover-lock-released:${roomId}`
-const readyChannel = (roomId: string) => `handover-ready:${roomId}`
-
-// Every test uses a fresh roomId: the room manager is a module-level singleton
-// whose in-memory maps persist for the lifetime of the file.
+// The manager is a module-level singleton whose maps live for the whole file.
 let roomCounter = 0
 const nextRoomId = () => `room-${++roomCounter}`
 
@@ -61,348 +69,349 @@ function fakeSocket() {
   return socket
 }
 
-// Subscribers persist for the whole file, so they must tolerate traffic from
-// later tests — including the deliberately malformed message.
-function parseMessage(message: string): Record<string, any> | undefined {
-  try {
-    return JSON.parse(message)
-  } catch {
-    return undefined
-  }
-}
-
-// Subscribes as "another pod" and collects everything published on a channel.
-function watch(channel: string) {
-  const messages: unknown[] = []
-  bus.subscribe(channel, (message) => {
-    const parsed = parseMessage(message)
-    if (parsed) messages.push(parsed)
-  })
-  return messages
+async function connect(roomId: string) {
+  const { room, isNewRoom } = await roomManager.getOrPrepareRoom(roomId)
+  const socket = fakeSocket()
+  roomManager.connectSocket(room, roomId, socket, `session-${roomId}`, isNewRoom)
+  return socket
 }
 
 beforeEach(() => {
+  readOwner.mockReset().mockResolvedValue(null)
+  casOwner.mockReset().mockResolvedValue("ok")
   fetchRoomSnapshot.mockReset().mockResolvedValue(undefined)
-  persistRoomSnapshot.mockReset().mockResolvedValue(undefined)
-  FakeRoom.instances.length = 0
-  vi.spyOn(console, "log").mockImplementation(() => {})
-  vi.spyOn(console, "error").mockImplementation(() => {})
+  persistRoomSnapshot.mockReset().mockResolvedValue(true)
 })
 
-afterEach(() => {
-  vi.useRealTimers()
-})
-
-describe("getOrPrepareRoom", () => {
-  it("acquires the room lock and loads the stored snapshot", async () => {
+describe("claiming a room", () => {
+  it("claims an absent record with the must-not-exist precondition", async () => {
     const roomId = nextRoomId()
-    const stored = { clock: 42, documents: [] }
-    fetchRoomSnapshot.mockResolvedValue(stored)
-
-    const { room, isNewRoom } = await roomManager.getOrPrepareRoom(roomId)
-
-    expect(isNewRoom).toBe(true)
-    expect(fetchRoomSnapshot).toHaveBeenCalledWith(roomId)
-    expect((room as unknown as FakeRoom).config.initialSnapshot).toBe(stored)
-    expect(bus.getLockOwner(roomId)).toMatch(/^TldrawRoomManagerPod-|-/)
+    await roomManager.getOrPrepareRoom(roomId)
+    expect(casOwner).toHaveBeenCalledWith(roomId, null, ME)
   })
 
-  it("passes undefined rather than null when there is no stored snapshot", async () => {
+  it("serves without a CAS when the record already names us", async () => {
     const roomId = nextRoomId()
-    fetchRoomSnapshot.mockResolvedValue(null)
-
-    const { room } = await roomManager.getOrPrepareRoom(roomId)
-
-    expect((room as unknown as FakeRoom).config.initialSnapshot).toBeUndefined()
+    readOwner.mockResolvedValueOnce({ owner: ME, etag: '"e1"' })
+    await roomManager.getOrPrepareRoom(roomId)
+    expect(casOwner).not.toHaveBeenCalled()
   })
 
-  it("returns the same room instance on a second call", async () => {
+  it("reallocates a dead owner's record against its etag", async () => {
     const roomId = nextRoomId()
-
-    const first = await roomManager.getOrPrepareRoom(roomId)
-    const second = await roomManager.getOrPrepareRoom(roomId)
-
-    expect(second.room).toBe(first.room)
-    expect(second.isNewRoom).toBe(false)
-    expect(FakeRoom.instances).toHaveLength(1)
+    readOwner.mockResolvedValueOnce({ owner: null, etag: '"e2"' })
+    await roomManager.getOrPrepareRoom(roomId)
+    expect(casOwner).toHaveBeenCalledWith(roomId, '"e2"', ME)
   })
 
-  // Two clients hitting an unloaded room at once must not each fetch a snapshot
-  // and build a room — the second would discard the first's state.
-  it("deduplicates concurrent preparations of the same room", async () => {
+  it("refuses with the correction when the record names someone else", async () => {
     const roomId = nextRoomId()
+    readOwner.mockResolvedValue({ owner: THEM, etag: '"e1"' })
+    await expect(roomManager.getOrPrepareRoom(roomId)).rejects.toThrow(NotOwnerError)
+    await expect(roomManager.getOrPrepareRoom(roomId)).rejects.toMatchObject({ owner: THEM })
+  })
 
-    const [a, b] = await Promise.all([
+  it("re-reads after a lost CAS and refuses with the winner's address", async () => {
+    const roomId = nextRoomId()
+    readOwner.mockResolvedValueOnce(null).mockResolvedValueOnce({ owner: THEM, etag: '"e3"' })
+    casOwner.mockResolvedValueOnce("conflict")
+    await expect(roomManager.getOrPrepareRoom(roomId)).rejects.toMatchObject({ owner: THEM })
+  })
+
+  it("serves after a lost CAS that the re-read shows we won anyway", async () => {
+    const roomId = nextRoomId()
+    readOwner.mockResolvedValueOnce(null).mockResolvedValueOnce({ owner: ME, etag: '"e4"' })
+    casOwner.mockResolvedValueOnce("conflict")
+    await expect(roomManager.getOrPrepareRoom(roomId)).resolves.toMatchObject({ isNewRoom: true })
+  })
+
+  it("collapses concurrent connects for one room into a single claim", async () => {
+    const roomId = nextRoomId()
+    await Promise.all([
+      roomManager.getOrPrepareRoom(roomId),
       roomManager.getOrPrepareRoom(roomId),
       roomManager.getOrPrepareRoom(roomId),
     ])
-
-    expect(a.room).toBe(b.room)
-    expect(fetchRoomSnapshot).toHaveBeenCalledTimes(1)
-    expect(FakeRoom.instances).toHaveLength(1)
-  })
-
-  it("renews the room lock on a heartbeat while the room is held", async () => {
-    vi.useFakeTimers()
-    const roomId = nextRoomId()
-
-    await roomManager.getOrPrepareRoom(roomId)
-    // Past the 10s lock lease, but heartbeats run every 5s.
-    await vi.advanceTimersByTimeAsync(12_000)
-
-    expect(bus.getLockOwner(roomId)).not.toBeNull()
+    expect(casOwner).toHaveBeenCalledTimes(1)
   })
 })
 
-// The lock is what decides the Room Owner. Renewing or releasing it without
-// proving we still hold it is how two pods end up serving one Room.
-describe("lock ownership", () => {
-  it("does not renew a lock that another pod has taken over", async () => {
-    vi.useFakeTimers()
+describe("losing ownership", () => {
+  it("drops the room without saving and closes sessions 1013", async () => {
     const roomId = nextRoomId()
-    await roomManager.getOrPrepareRoom(roomId)
+    const socket = await connect(roomId)
+    persistRoomSnapshot.mockClear()
 
-    // Our lease lapses and another pod legitimately acquires the room.
-    bus.setLock(roomId, "usurper-pod", 600)
-    await vi.advanceTimersByTimeAsync(6_000)
+    readOwner.mockResolvedValue({ owner: THEM, etag: '"e5"' })
+    await roomManager.recheckAll()
 
-    // A `SET ... XX` heartbeat would have overwritten this with our pod name,
-    // leaving both pods convinced they own the room.
-    expect(bus.getLockOwner(roomId)).toBe("usurper-pod")
+    expect(persistRoomSnapshot).not.toHaveBeenCalled()
+    expect(socket.closes).toEqual([
+      { code: 1013, reason: "Room reallocated to another server, please reconnect" },
+    ])
   })
 
-  it("gives up the room and evicts its sessions when the lock is lost", async () => {
-    vi.useFakeTimers()
+  it("keeps serving when the ownership read fails, since a blip is not a loss", async () => {
     const roomId = nextRoomId()
-    const { room, isNewRoom } = await roomManager.getOrPrepareRoom(roomId)
-    const socket = fakeSocket()
-    roomManager.connectSocket(room, roomId, socket, "session-1", isNewRoom)
+    const socket = await connect(roomId)
+    readOwner.mockRejectedValue(new Error("network"))
+    await roomManager.recheckAll()
+    expect(socket.closes).toEqual([])
+  })
 
-    bus.setLock(roomId, "usurper-pod", 600)
-    await vi.advanceTimersByTimeAsync(6_000)
+  it("keeps serving while the record still names us", async () => {
+    const roomId = nextRoomId()
+    const socket = await connect(roomId)
+    readOwner.mockResolvedValue({ owner: ME, etag: '"e6"' })
+    await roomManager.recheckAll()
+    expect(socket.closes).toEqual([])
+  })
+})
 
-    // Clients are told to reconnect, and land on whoever holds the lock now.
-    expect(socket.closes[0]?.code).toBe(1013)
-    // The stale in-memory copy must not be written over the new owner's state.
+describe("draining", () => {
+  // drain() drains every active Room, and the manager is a module-level
+  // singleton, so Rooms from earlier tests are still held here. Assertions are
+  // therefore scoped to the Room under test rather than to the whole call.
+  it("persists before vacating, never the other way round", async () => {
+    const roomId = nextRoomId()
+    await connect(roomId)
+    const order: string[] = []
+    persistRoomSnapshot.mockImplementation(async (id: string) => {
+      order.push(`persist:${id}`)
+      return true
+    })
+    readOwner.mockResolvedValue({ owner: ME, etag: '"e7"' })
+    casOwner.mockImplementation(async (id: string) => {
+      order.push(`vacate:${id}`)
+      return "ok"
+    })
+
+    await roomManager.drain()
+
+    const persisted = order.indexOf(`persist:${roomId}`)
+    const vacated = order.indexOf(`vacate:${roomId}`)
+    expect(persisted).toBeGreaterThanOrEqual(0)
+    expect(vacated).toBeGreaterThan(persisted)
+  })
+
+  it("vacates by CAS to null against the current etag", async () => {
+    const roomId = nextRoomId()
+    await connect(roomId)
+    readOwner.mockResolvedValue({ owner: ME, etag: '"e8"' })
+    await roomManager.drain()
+    expect(casOwner).toHaveBeenCalledWith(roomId, '"e8"', null)
+  })
+
+  it("does not vacate a record that has already moved on", async () => {
+    const roomId = nextRoomId()
+    await connect(roomId)
+    casOwner.mockClear()
+    readOwner.mockResolvedValue({ owner: THEM, etag: '"e9"' })
+    await roomManager.drain()
+    expect(casOwner.mock.calls.filter(([id]) => id === roomId)).toEqual([])
+  })
+
+  it("closes drained sessions 1013 so clients reconnect elsewhere", async () => {
+    const roomId = nextRoomId()
+    const socket = await connect(roomId)
+    readOwner.mockResolvedValue({ owner: ME, etag: '"e10"' })
+    await roomManager.drain()
+    expect(socket.closes[0]).toMatchObject({ code: 1013 })
+  })
+})
+
+describe("snapshot writes", () => {
+  it("re-reads ownership before persisting and skips the write if it moved", async () => {
+    const roomId = nextRoomId()
+    await connect(roomId)
+    persistRoomSnapshot.mockClear()
+
+    readOwner.mockResolvedValue({ owner: THEM, etag: '"e11"' })
+    await roomManager.saveRoom(roomId)
+
     expect(persistRoomSnapshot).not.toHaveBeenCalled()
   })
 
-  it("does not write a stale snapshot after losing the lock", async () => {
-    vi.useFakeTimers()
+  it("persists when the record still names us", async () => {
     const roomId = nextRoomId()
-    const { room } = await roomManager.getOrPrepareRoom(roomId)
-    const fake = room as unknown as FakeRoom
-
-    // The first edit saves immediately (leading edge, while the room is still
-    // ours); the second queues a trailing save 10s out.
-    fake.config.onDataChange()
-    fake.config.onDataChange()
-    const writesWhileOwned = persistRoomSnapshot.mock.calls.length
-
-    // The lock is taken over, and the heartbeat notices 5s in.
-    bus.setLock(roomId, "usurper-pod", 600)
-    await vi.advanceTimersByTimeAsync(6_000)
-
-    // Past the trailing save's deadline: it must have been cancelled, or it
-    // lands on top of everything the new owner has written since.
-    await vi.advanceTimersByTimeAsync(15_000)
-    expect(persistRoomSnapshot).toHaveBeenCalledTimes(writesWhileOwned)
-  })
-
-  it("does not delete another pod's lock when releasing a room", async () => {
-    const roomId = nextRoomId()
-    const { room, isNewRoom } = await roomManager.getOrPrepareRoom(roomId)
-    roomManager.connectSocket(room, roomId, fakeSocket(), "session-1", isNewRoom)
-
-    // Our lease lapsed and another pod took over, but a handover request for
-    // the room we still hold in memory arrives anyway.
-    bus.setLock(roomId, "usurper-pod", 600)
-    bus.publish(CHANNEL_HANDOVER_REQUEST, JSON.stringify({ roomId, targetPodId: "third-pod" }))
-    await vi.waitFor(() => expect(persistRoomSnapshot).toHaveBeenCalled())
-
-    expect(bus.getLockOwner(roomId)).toBe("usurper-pod")
-  })
-
-  it("does not delete another pod's lock when the last session leaves", async () => {
-    const roomId = nextRoomId()
-    const { room, isNewRoom } = await roomManager.getOrPrepareRoom(roomId)
-    const socket = fakeSocket()
-    roomManager.connectSocket(room, roomId, socket, "session-1", isNewRoom)
-
-    bus.setLock(roomId, "usurper-pod", 600)
-    socket.emit("close")
-    await vi.waitFor(() => expect(bus.getLockOwner(roomId)).toBe("usurper-pod"))
+    await connect(roomId)
+    persistRoomSnapshot.mockClear()
+    readOwner.mockResolvedValue({ owner: ME, etag: '"e12"' })
+    await roomManager.saveRoom(roomId)
+    expect(persistRoomSnapshot).toHaveBeenCalledWith(roomId, { clock: 1, documents: [] })
   })
 })
 
-describe("acquiring a room owned by another pod", () => {
-  it("requests a handover and takes the room once the lock is released", async () => {
-    const roomId = nextRoomId()
-    bus.setLock(roomId, "other-pod")
-
-    const requests = watch(CHANNEL_HANDOVER_REQUEST)
-    const readySignals = watch(readyChannel(roomId))
-
-    // The other pod plays its part of the protocol: on request, drop the lock
-    // and announce it.
-    bus.subscribe(CHANNEL_HANDOVER_REQUEST, (message) => {
-      const request = parseMessage(message)
-      if (request?.roomId !== roomId) return
-      bus.deleteLock(roomId)
-      bus.publish(lockReleasedChannel(roomId), JSON.stringify({ roomId }))
-    })
-
-    const { room } = await roomManager.getOrPrepareRoom(roomId)
-
-    expect(room).toBeDefined()
-    expect(requests).toContainEqual(expect.objectContaining({ roomId }))
-    expect(bus.getLockOwner(roomId)).not.toBe("other-pod")
-    // The incoming owner must announce readiness, or the outgoing owner holds
-    // its clients open for the full ready timeout.
-    expect(readySignals).toHaveLength(1)
-  })
-
-  it("fails the connection when the other pod never releases the lock", async () => {
-    vi.useFakeTimers()
-    const roomId = nextRoomId()
-    bus.setLock(roomId, "stubborn-pod", 600)
-
-    const prepared = roomManager.getOrPrepareRoom(roomId)
-    const assertion = expect(prepared).rejects.toThrow("LOCK_ACQUISITION_FAILED")
-
-    await vi.advanceTimersByTimeAsync(6_000)
-    await assertion
-    expect(bus.getLockOwner(roomId)).toBe("stubborn-pod")
+describe("roomCount", () => {
+  it("reports how many rooms are held, for the heartbeat body", async () => {
+    const before = roomManager.roomCount()
+    await connect(nextRoomId())
+    expect(roomManager.roomCount()).toBe(before + 1)
   })
 })
 
-describe("responding to a handover request", () => {
-  it("persists the snapshot, releases the lock and evicts clients with 1013", async () => {
+describe("persistence health check", () => {
+  // Ownership says a worker MAY hold a Room; being able to save is what makes
+  // that worth anything. With the Redis registry those are separate questions,
+  // so the capability is tested rather than inferred.
+  //
+  // The manager is a module-level singleton, so the failure counter carries
+  // between tests: every case below starts with a successful save to zero it.
+  // Surrender is deliberately one-way, so the case that triggers it comes last
+  // and asserts everything about it at once.
+  async function healthyRoom(etag: string) {
     const roomId = nextRoomId()
-    const { room, isNewRoom } = await roomManager.getOrPrepareRoom(roomId)
-    const socket = fakeSocket()
-    roomManager.connectSocket(room, roomId, socket, "session-1", isNewRoom)
+    const socket = await connect(roomId)
+    readOwner.mockResolvedValue({ owner: ME, etag })
+    persistRoomSnapshot.mockResolvedValue(true)
+    await roomManager.saveRoom(roomId)
+    return { roomId, socket }
+  }
 
-    const released = watch(lockReleasedChannel(roomId))
-    // Stand in for the incoming owner: acknowledge as soon as the lock drops.
-    bus.subscribe(lockReleasedChannel(roomId), () => {
-      bus.publish(readyChannel(roomId), JSON.stringify({ roomId, newOwner: "new-pod" }))
-    })
-
-    bus.publish(CHANNEL_HANDOVER_REQUEST, JSON.stringify({ roomId, targetPodId: "new-pod" }))
-    await vi.waitFor(() => expect(socket.closes).toHaveLength(1))
-
-    expect(persistRoomSnapshot).toHaveBeenCalledWith(roomId, (room as unknown as FakeRoom).snapshot)
-    expect(released).toHaveLength(1)
-    expect(bus.getLockOwner(roomId)).toBeNull()
-    expect(socket.closes[0].code).toBe(1013)
+  it("stays healthy while writes land", async () => {
+    const { roomId } = await healthyRoom('"h1"')
+    await roomManager.saveRoom(roomId)
+    expect(roomManager.healthy).toBe(true)
   })
 
-  it("evicts clients anyway when the incoming owner never signals ready", async () => {
-    vi.useFakeTimers()
-    const roomId = nextRoomId()
-    const { room, isNewRoom } = await roomManager.getOrPrepareRoom(roomId)
-    const socket = fakeSocket()
-    roomManager.connectSocket(room, roomId, socket, "session-1", isNewRoom)
-
-    bus.publish(CHANNEL_HANDOVER_REQUEST, JSON.stringify({ roomId, targetPodId: "new-pod" }))
-
-    await vi.advanceTimersByTimeAsync(11_000)
-    expect(socket.closes[0]?.code).toBe(1013)
+  it("tolerates failures below the threshold", async () => {
+    const { roomId } = await healthyRoom('"h2"')
+    persistRoomSnapshot.mockResolvedValue(false)
+    await roomManager.saveRoom(roomId)
+    await roomManager.saveRoom(roomId)
+    expect(roomManager.healthy).toBe(true)
   })
 
-  it("ignores a request for a room it does not hold", async () => {
-    const roomId = nextRoomId()
-    bus.setLock(roomId, "other-pod")
+  it("counts consecutively, so a success in between clears the tally", async () => {
+    const { roomId } = await healthyRoom('"h3"')
 
-    bus.publish(CHANNEL_HANDOVER_REQUEST, JSON.stringify({ roomId, targetPodId: "third-pod" }))
-    await vi.waitFor(() => expect(persistRoomSnapshot).not.toHaveBeenCalled())
+    persistRoomSnapshot.mockResolvedValue(false)
+    await roomManager.saveRoom(roomId)
+    await roomManager.saveRoom(roomId)
+    persistRoomSnapshot.mockResolvedValue(true)
+    await roomManager.saveRoom(roomId)
+    persistRoomSnapshot.mockResolvedValue(false)
+    await roomManager.saveRoom(roomId)
+    await roomManager.saveRoom(roomId)
 
-    expect(bus.getLockOwner(roomId)).toBe("other-pod")
+    // Five failures overall but never three in a row.
+    expect(roomManager.healthy).toBe(true)
   })
 
-  it("survives a malformed handover message", async () => {
-    const roomId = nextRoomId()
-    await roomManager.getOrPrepareRoom(roomId)
+  it("surrenders every room, vacates ownership and fails health at the threshold", async () => {
+    const { roomId, socket } = await healthyRoom('"h4"')
+    casOwner.mockClear()
+    persistRoomSnapshot.mockResolvedValue(false)
 
-    bus.publish(CHANNEL_HANDOVER_REQUEST, "not json")
-    await vi.waitFor(() => expect(console.error).toHaveBeenCalled())
+    await roomManager.saveRoom(roomId)
+    await roomManager.saveRoom(roomId)
+    await roomManager.saveRoom(roomId)
 
-    expect(bus.getLockOwner(roomId)).not.toBeNull()
-  })
-})
-
-describe("connectSocket", () => {
-  it("registers the session with the room", async () => {
-    const roomId = nextRoomId()
-    const { room, isNewRoom } = await roomManager.getOrPrepareRoom(roomId)
-    const socket = fakeSocket()
-
-    roomManager.connectSocket(room, roomId, socket, "session-1", isNewRoom)
-
-    expect((room as unknown as FakeRoom).sessions.has("session-1")).toBe(true)
-    expect((socket as unknown as { sessionId: string }).sessionId).toBe("session-1")
-  })
-
-  it("tells the room when a socket closes", async () => {
-    const roomId = nextRoomId()
-    const { room, isNewRoom } = await roomManager.getOrPrepareRoom(roomId)
-    const fake = room as unknown as FakeRoom
-    const first = fakeSocket()
-    const second = fakeSocket()
-
-    roomManager.connectSocket(room, roomId, first, "session-1", isNewRoom)
-    roomManager.connectSocket(room, roomId, second, "session-2", false)
-    first.emit("close")
-
-    expect(fake.closedSessions).toEqual(["session-1"])
-  })
-
-  // The lock must not outlive the last client, or the room stays pinned to a
-  // pod that is no longer serving it.
-  it("releases the room lock once the last session leaves", async () => {
-    const roomId = nextRoomId()
-    const { room, isNewRoom } = await roomManager.getOrPrepareRoom(roomId)
-    const socket = fakeSocket()
-    roomManager.connectSocket(room, roomId, socket, "session-1", isNewRoom)
-    expect(bus.getLockOwner(roomId)).not.toBeNull()
-
-    socket.emit("close")
-    await vi.waitFor(() => expect(bus.getLockOwner(roomId)).toBeNull())
-
-    // The room is gone from memory, so the next connection rebuilds it.
-    const reopened = await roomManager.getOrPrepareRoom(roomId)
-    expect(reopened.isNewRoom).toBe(true)
-  })
-
-  it("keeps the room while other sessions remain", async () => {
-    const roomId = nextRoomId()
-    const { room, isNewRoom } = await roomManager.getOrPrepareRoom(roomId)
-    const first = fakeSocket()
-    const second = fakeSocket()
-    roomManager.connectSocket(room, roomId, first, "session-1", isNewRoom)
-    roomManager.connectSocket(room, roomId, second, "session-2", false)
-
-    first.emit("close")
-
-    expect(bus.getLockOwner(roomId)).not.toBeNull()
-    expect((await roomManager.getOrPrepareRoom(roomId)).room).toBe(room)
+    expect(roomManager.healthy).toBe(false)
+    expect(roomManager.roomCount()).toBe(0)
+    expect(socket.closes[0]).toMatchObject({ code: 1013 })
+    // The registry is still reachable in the case this exists for (Redis up,
+    // S3 down), so Rooms are handed back rather than left to time out.
+    expect(casOwner).toHaveBeenCalledWith(roomId, '"h4"', null)
   })
 })
 
-describe("shutdown", () => {
-  it("persists every held room and releases its lock", async () => {
-    const roomIds = [nextRoomId(), nextRoomId()]
-    for (const roomId of roomIds) {
-      const { room, isNewRoom } = await roomManager.getOrPrepareRoom(roomId)
-      roomManager.connectSocket(room, roomId, fakeSocket(), `session-${roomId}`, isNewRoom)
-    }
+describe("router-backed ownership re-check", () => {
+  // The push is the mechanism; this poll is the backstop for pushes that went
+  // missing. One batched question replaces one read per Room.
+  const ROUTER = "http://router.internal:8081"
+  let fetchMock: ReturnType<typeof vi.fn>
 
-    await roomManager.shutdown()
+  beforeEach(() => {
+    process.env.ROUTER_INTERNAL_URL = ROUTER
+    fetchMock = vi.fn()
+    vi.stubGlobal("fetch", fetchMock)
+  })
 
-    for (const roomId of roomIds) {
-      expect(persistRoomSnapshot).toHaveBeenCalledWith(roomId, expect.anything())
-      expect(bus.getLockOwner(roomId)).toBeNull()
-    }
+  afterEach(() => {
+    delete process.env.ROUTER_INTERNAL_URL
+    vi.unstubAllGlobals()
+  })
+
+  it("asks the router once for every room it holds, not once per room", async () => {
+    const first = nextRoomId()
+    const second = nextRoomId()
+    await connect(first)
+    await connect(second)
+    readOwner.mockClear()
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ lost: [] }) })
+
+    await roomManager.recheckAll()
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe(`${ROUTER}/internal/ownership`)
+    const body = JSON.parse(init.body)
+    expect(body.addr).toBe(ME)
+    expect(body.roomIds).toEqual(expect.arrayContaining([first, second]))
+    // The whole point: no per-Room reads against the store.
+    expect(readOwner).not.toHaveBeenCalled()
+  })
+
+  it("gives up exactly the rooms the router says have moved", async () => {
+    const kept = nextRoomId()
+    const lost = nextRoomId()
+    const keptSocket = await connect(kept)
+    const lostSocket = await connect(lost)
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ lost: [lost] }) })
+
+    await roomManager.recheckAll()
+
+    expect(lostSocket.closes[0]).toMatchObject({ code: 1013 })
+    expect(keptSocket.closes).toEqual([])
+  })
+
+  it("keeps serving when the router cannot answer, since a blip is not a loss", async () => {
+    const roomId = nextRoomId()
+    const socket = await connect(roomId)
+    fetchMock.mockResolvedValue({ ok: false, status: 503 })
+
+    await roomManager.recheckAll()
+
+    expect(socket.closes).toEqual([])
+  })
+
+  it("keeps serving when the router is unreachable", async () => {
+    const roomId = nextRoomId()
+    const socket = await connect(roomId)
+    fetchMock.mockRejectedValue(new Error("ECONNREFUSED"))
+
+    await roomManager.recheckAll()
+
+    expect(socket.closes).toEqual([])
+  })
+
+  it("falls back to reading each record when no router is configured", async () => {
+    delete process.env.ROUTER_INTERNAL_URL
+    const roomId = nextRoomId()
+    const socket = await connect(roomId)
+    readOwner.mockResolvedValue({ owner: THEM, etag: '"r1"' })
+
+    await roomManager.recheckAll()
+
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(socket.closes[0]).toMatchObject({ code: 1013 })
+  })
+})
+
+describe("ownership loss pushed by the router", () => {
+  it("drops the room immediately, without saving", async () => {
+    const roomId = nextRoomId()
+    const socket = await connect(roomId)
+    persistRoomSnapshot.mockClear()
+
+    roomManager.onOwnershipLost(roomId)
+
+    expect(socket.closes[0]).toMatchObject({ code: 1013 })
+    expect(persistRoomSnapshot).not.toHaveBeenCalled()
+  })
+
+  it("ignores a push for a room it is not holding", async () => {
+    expect(() => roomManager.onOwnershipLost("never-heard-of-it")).not.toThrow()
   })
 })

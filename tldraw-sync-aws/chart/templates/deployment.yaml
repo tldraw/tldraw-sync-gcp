@@ -14,8 +14,9 @@ spec:
       labels:
         app: {{ .Release.Name }}-app
     spec:
-      # Graceful shutdown force-saves every active Room and releases its lock
-      terminationGracePeriodSeconds: 60
+      # Drain deregisters, waits ~2x the router poll so every router drops us,
+      # then persists and vacates every Room it holds.
+      terminationGracePeriodSeconds: 90
       containers:
         - name: app
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
@@ -26,17 +27,34 @@ spec:
           env:
             - name: PORT
               value: "3001"
-            # Pod Identity for Room Locks
-            - name: HOSTNAME
+            # Owner Identity: the exact string written into both members/ and
+            # owners/. Envoy dials this directly, with no Service in the path.
+            # POD_IP must be declared first: Kubernetes resolves $(VAR) only
+            # against variables defined earlier in the list.
+            - name: POD_IP
               valueFrom:
                 fieldRef:
-                  fieldPath: metadata.name
+                  fieldPath: status.podIP
+            - name: ADVERTISE_ADDR
+              value: "http://$(POD_IP):3001"
+            - name: HEARTBEAT_INTERVAL_MS
+              value: {{ .Values.timings.heartbeatIntervalMs | quote }}
+            - name: MEMBER_POLL_INTERVAL_MS
+              value: {{ .Values.timings.memberPollIntervalMs | quote }}
+            - name: MEMBER_TTL_MS
+              value: {{ .Values.timings.memberTtlMs | quote }}
+            - name: OWNERSHIP_RECHECK_INTERVAL_MS
+              value: {{ .Values.timings.ownershipRecheckIntervalMs | quote }}
+            # The internal Service, not the LoadBalancer: that one fronts
+            # Envoy, which would proxy this straight back to a worker.
+            - name: ROUTER_INTERNAL_URL
+              value: "http://{{ .Release.Name }}-router-internal:8081"
+            - name: REGISTRY_BACKEND
+              value: {{ .Values.registry.backend | quote }}
+            {{- if eq .Values.registry.backend "redis" }}
             - name: REDIS_URL
-              {{- if .Values.redis.enabled }}
-              value: "redis://{{ .Release.Name }}-redis:6379"
-              {{- else }}
-              value: {{ required "redis.url is required when redis.enabled=false" .Values.redis.url | quote }}
-              {{- end }}
+              value: {{ .Values.redis.url | default (printf "redis://%s-redis:6379" .Release.Name) | quote }}
+            {{- end }}
             - name: S3_BUCKET_NAME
               value: {{ .Values.env.s3BucketName | quote }}
             - name: AWS_REGION

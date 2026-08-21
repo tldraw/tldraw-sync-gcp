@@ -13,7 +13,9 @@
     "test:watch": "vitest",
     "start": "node -r dotenv/config dist/index.js",
     "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check .",
+    "dev:router": "tsx watch --clear-screen=false --env-file=.env src/router/index.ts",
+    "start:router": "node dist/router/index.js"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.700.0",

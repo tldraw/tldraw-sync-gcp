@@ -80,9 +80,19 @@ export async function fetchRoomSnapshot(roomId: string): Promise<RoomSnapshot | 
   }
 }
 
-export async function persistRoomSnapshot(roomId: string, snapshot: RoomSnapshot) {
+/**
+ * Returns whether the Snapshot actually landed.
+ *
+ * This used to resolve identically whether it saved or lost the Room, which
+ * meant nothing upstream could tell the difference. The owner needs to know:
+ * a worker that cannot persist has no business holding Rooms, whatever the
+ * ownership record says — see the persistence health check in roomManager.
+ */
+export async function persistRoomSnapshot(
+  roomId: string,
+  snapshot: RoomSnapshot,
+): Promise<boolean> {
   try {
-    // Attempt to save with retry logic
     await retryOperation(async () => {
       await s3.send(
         new PutObjectCommand({
@@ -93,12 +103,13 @@ export async function persistRoomSnapshot(roomId: string, snapshot: RoomSnapshot
         }),
       )
     })
+    return true
   } catch (err) {
-    // Log the error clearly so it isn't "silent"
     console.error(
       `[S3] CRITICAL: Failed to persist snapshot for room ${roomId} after retries.`,
       err,
     )
+    return false
   }
 }
 

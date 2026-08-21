@@ -213,7 +213,30 @@ flowchart LR
 
 ---
 
-## 6. The harness, and the two times it lied
+## 6. Tweak: allocation follows the weights
+
+Allocation is weighted rendezvous now (see ADR 0005's amendment of 2026-08-21): each live member is scored `-w / ln(h)` with `w = 1/(1 + rooms)`, and the count rides inside the member key on S3 and the member entry on Redis, so no read got more expensive. Measured with the drill's spread mode — pin the fleet to one worker, preload it with 12 held Rooms, scale to 3, then burst 24 fresh Rooms and compare where they land against what the member records predict:
+
+```
+node scale-drill.mjs --spread --preload 12 --to 3 --rooms 24
+```
+
+**Measured — 12-room preload, 3 workers, 24-room burst:**
+
+| worker | rooms before | weight | expected share | won |
+|---|---|---|---|---|
+| preloaded | 12 | 0.077 | 3.7% | **0/24** |
+| fresh A | 0 | 1.000 | 48.1% | 8/24 |
+| fresh B | 0 | 1.000 | 48.1% | 16/24 |
+
+- **Unweighted rendezvous would have handed the loaded worker ~8 of the 24.** It took 0, against a static-weight expectation of 0.9. That is the behaviour the amendment claims: a loaded worker stops attracting new Rooms until the fleet catches up.
+- **The fresh pair's 8/16 split is noise, not bias.** Conditional on 24 Rooms reaching the pair, the expected split is 12/12 with σ≈2.4; 8 is ~1.6σ out — one draw of a small sample, and the sample is small by design. The `RUN` suffix makes each run a fresh draw, so re-runs wobble here and should.
+- **The preload never moved** — 12 Rooms before, 12 after. Scaling up still disturbs nothing; the weighting only shapes what did not exist yet.
+- **0 failed connects**, and that number is load-bearing: the first execution of this drill printed an all-zero spread table that measured nothing, because every connect had failed — the running k3d cluster predated `k3d-config.yaml`'s 8081 mapping, so the host port was refusing connections while the in-cluster path was healthy. (`k3d node edit k3d-tldraw-local-serverlb --port-add 8081:8081` aligns an existing cluster without recreating it.) Same lesson as §7: a zero is only trustworthy next to the counter that would have caught the nothing it might be.
+
+Paced allocation (`--pace N` waits N ms between Rooms so heartbeats update the weights mid-batch) is built but not yet measured; under pacing the static prediction becomes a floor rather than a target, because the fresh workers' weights fall as they win.
+
+## 7. The harness, and the two times it lied
 
 Every number above came from `tldraw-client/scale-drill.mjs`: hold N real `TLSyncClient` Sessions, walk a replica path, open a fresh Session per Room at each step to force re-resolution, and record what the held Sessions felt. Ownership is read from whichever store is in use, so one drill covers all three designs.
 
@@ -240,7 +263,7 @@ Both share a lesson worth keeping: **a measurement that improves without the mec
 
 **Not measured, and it matters:** none of this has been load tested. Everything above ran 24 Rooms on a laptop k3d cluster.
 
-The obvious bar to clear is the `~7,000 concurrent connections` figure in [`../stress-test/README.md`](../stress-test/README.md) — but **that benchmark does not measure what its headline implies**, and the same trap described in §6 is why. The k6 script opens a WebSocket and sends `{type: "push"}` without ever sending a `connect` message, so `TLSocketRoom` prunes every session at ~10s. Run against this cluster at 4 VUs it reports:
+The obvious bar to clear is the `~7,000 concurrent connections` figure in [`../stress-test/README.md`](../stress-test/README.md) — but **that benchmark does not measure what its headline implies**, and the same trap described in §7 is why. The k6 script opens a WebSocket and sends `{type: "push"}` without ever sending a `connect` message, so `TLSocketRoom` prunes every session at ~10s. Run against this cluster at 4 VUs it reports:
 
 | k6 says | actually happened |
 |---|---|

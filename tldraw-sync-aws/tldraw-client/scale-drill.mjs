@@ -27,6 +27,14 @@
  *   node scale-drill.mjs --to 3
  *   node scale-drill.mjs --steps 3,4,3,2          # up twice, down twice
  *   node scale-drill.mjs --url http://localhost:8081 --rooms 24 --json out.json
+ *
+ * Spread mode measures weighted allocation instead of a scale walk: pin the
+ * fleet to one worker, preload it with held Rooms, scale up, then create a
+ * batch of fresh Rooms and compare where they land against what the member
+ * records' weights predict. `--pace N` waits N ms between allocations so the
+ * weights can update mid-batch (0 = burst, where the static prediction is
+ * exact):
+ *   node scale-drill.mjs --spread --preload 12 --to 3 --rooms 24
  */
 
 import { execFile } from "child_process"
@@ -82,6 +90,10 @@ const JSON_OUT = arg("json", null)
 const OBSERVE_MS = Number(arg("observe", 15_000))
 const LABEL = arg("label", "run")
 let OWNER_PROBE = arg("owner-probe", "auto")
+
+const SPREAD = process.argv.includes("--spread")
+const PRELOAD = Number(arg("preload", 12))
+const PACE_MS = Number(arg("pace", 0))
 
 const RUN = Math.random().toString(36).slice(2, 8)
 const roomIds = Array.from({ length: ROOMS }, (_, i) => `drill-${RUN}-${i}`)
@@ -262,6 +274,55 @@ function disruption(record, since, until = Infinity) {
     recovered: Boolean(recovery),
   }
 }
+
+// --- member probes (spread mode) -------------------------------------------
+
+// The registry's member records carry each worker's room count — inside the S3
+// key itself (`members/{addr},{rooms}`), or in the `members:rooms` hash on
+// Redis. Spread mode reads them so the prediction and the measurement come
+// from the same store the router allocates against. The legacy lock design
+// has no member records, so spread mode cannot run against it.
+async function membersViaBucket() {
+  const { stdout } = await kubectl(
+    "exec",
+    "deploy/tldraw-aws-localstack",
+    "--",
+    "sh",
+    "-c",
+    `awslocal s3 ls s3://${BUCKET}/members/ 2>/dev/null`,
+  )
+  const byAddr = new Map()
+  for (const line of stdout.split("\n")) {
+    const key = line.trim().split(/\s+/).at(-1)
+    if (!key) continue
+    const comma = key.lastIndexOf(",")
+    const addr = decodeURIComponent(comma === -1 ? key : key.slice(0, comma))
+    const rooms = comma === -1 ? 0 : Number(key.slice(comma + 1)) || 0
+    // A count change can leave two keys for one addr for up to a TTL; break
+    // towards the higher count, the same way listMembers breaks its ties.
+    if (!byAddr.has(addr) || byAddr.get(addr).rooms < rooms) byAddr.set(addr, { addr, rooms })
+  }
+  return [...byAddr.values()]
+}
+
+async function membersViaRedisRegistry() {
+  const { stdout } = await kubectl(
+    "exec",
+    "deploy/tldraw-aws-redis",
+    "--",
+    "sh",
+    "-c",
+    "redis-cli hgetall members:rooms",
+  )
+  const lines = stdout.split("\n").map((line) => line.trim()).filter(Boolean)
+  const members = []
+  for (let i = 0; i + 1 < lines.length; i += 2) {
+    members.push({ addr: lines[i], rooms: Number(lines[i + 1]) || 0 })
+  }
+  return members
+}
+
+const MEMBER_PROBES = { bucket: membersViaBucket, "redis-registry": membersViaRedisRegistry }
 
 // --- cluster ---------------------------------------------------------------
 
@@ -463,7 +524,159 @@ async function main() {
   process.exit(0)
 }
 
-main().catch((error) => {
+// --- spread mode -----------------------------------------------------------
+
+/**
+ * Does allocation actually follow the weights? Pin everything onto one worker,
+ * add fresh workers, then watch where a batch of new Rooms lands.
+ *
+ * The prediction is computed from the member records read immediately before
+ * the batch, with the same 1/(1+rooms) the router uses. In a burst (--pace 0)
+ * the router's weight view cannot change mid-batch, so the static prediction
+ * is exact. Under pacing the fresh workers' weights fall as they win, so the
+ * preloaded worker's observed share drifts *above* the static number — the
+ * prediction is a floor there, not a target.
+ */
+async function spreadMain() {
+  if (OWNER_PROBE === "auto") OWNER_PROBE = await detectProbe()
+  if (!(OWNER_PROBE in MEMBER_PROBES)) {
+    throw new Error(`spread mode needs member records; probe "${OWNER_PROBE}" has none`)
+  }
+  const readMembers = MEMBER_PROBES[OWNER_PROBE]
+  const target = STEPS[0]
+  const startReplicas = await specReplicas()
+
+  console.log("Spread drill (weighted allocation)")
+  console.log(`  label        ${LABEL}`)
+  console.log(`  url          ${URL_BASE}`)
+  console.log(`  preload      ${PRELOAD} rooms onto 1 worker`)
+  console.log(`  batch        ${ROOMS} rooms at ${target} workers, pace ${PACE_MS}ms`)
+  console.log(`  owner probe  ${OWNER_PROBE}\n`)
+
+  console.log("Scaling to 1 worker to concentrate the preload...")
+  await kubectl("scale", "deploy", DEPLOYMENT, "--replicas=1")
+  if (!(await waitForScale(1))) throw new Error("never settled at 1 replica")
+  // Drained workers deregister on the way out; give routers a poll to notice.
+  await sleep(5_000)
+
+  console.log(`Opening ${PRELOAD} held preload sessions...`)
+  const preloadIds = Array.from({ length: PRELOAD }, (_, i) => `spread-${RUN}-p${i}`)
+  const preloadSessions = await Promise.all(preloadIds.map((id) => openSession(id, `pre-${id}`)))
+  const preloadFailed = preloadSessions.filter((s) => s.failed).length
+  if (preloadFailed) console.log(`  FAILED to load ${preloadFailed}/${PRELOAD}`)
+  // Two heartbeats and a router poll: the count has to reach the weights.
+  await sleep(6_000)
+
+  console.log(`Scaling to ${target} workers...`)
+  await kubectl("scale", "deploy", DEPLOYMENT, `--replicas=${target}`)
+  if (!(await waitForScale(target))) throw new Error(`never settled at ${target} replicas`)
+  // New workers must register and every router must have polled them in.
+  await sleep(8_000)
+
+  const membersBefore = await readMembers()
+  const weightOf = (member) => 1 / (1 + member.rooms)
+  const totalWeight = membersBefore.reduce((sum, member) => sum + weightOf(member), 0)
+  const loaded = membersBefore.reduce((a, b) => (a.rooms >= b.rooms ? a : b))
+
+  console.log(`\nMembers before the batch:`)
+  for (const member of membersBefore) {
+    const share = weightOf(member) / totalWeight
+    console.log(
+      `  ${member.addr}  rooms=${member.rooms}  weight=${weightOf(member).toFixed(3)}  expected share=${(share * 100).toFixed(1)}%`,
+    )
+  }
+
+  console.log(`\nAllocating ${ROOMS} fresh rooms...`)
+  const batchIds = Array.from({ length: ROOMS }, (_, i) => `spread-${RUN}-n${i}`)
+  let batchSessions
+  if (PACE_MS > 0) {
+    batchSessions = []
+    for (const id of batchIds) {
+      batchSessions.push(await openSession(id, `new-${id}`))
+      await sleep(PACE_MS)
+    }
+  } else {
+    batchSessions = await Promise.all(batchIds.map((id) => openSession(id, `new-${id}`)))
+  }
+  const batchFailed = batchSessions.filter((s) => s.failed).length
+
+  const owners = await readOwners(batchIds)
+  const wins = new Map()
+  for (const id of batchIds) {
+    if (owners[id]) wins.set(owners[id], (wins.get(owners[id]) ?? 0) + 1)
+  }
+  const placed = [...wins.values()].reduce((a, b) => a + b, 0)
+
+  // Post-batch heartbeats need a beat to land before the counts are current.
+  await sleep(5_000)
+  const membersAfter = await readMembers()
+  const afterByAddr = new Map(membersAfter.map((member) => [member.addr, member.rooms]))
+
+  console.log(`\n--- spread ---`)
+  console.log("worker                        before  expected  won        after")
+  const rows = []
+  for (const member of membersBefore) {
+    const expected = weightOf(member) / totalWeight
+    const won = wins.get(member.addr) ?? 0
+    const row = {
+      addr: member.addr,
+      roomsBefore: member.rooms,
+      expectedShare: expected,
+      won,
+      observedShare: placed ? won / placed : null,
+      roomsAfter: afterByAddr.get(member.addr) ?? null,
+      preloaded: member.addr === loaded.addr,
+    }
+    rows.push(row)
+    console.log(
+      `  ${member.addr.padEnd(28)}${String(member.rooms).padEnd(8)}` +
+        `${((expected * 100).toFixed(1) + "%").padEnd(10)}` +
+        `${`${won} (${placed ? Math.round((won / placed) * 100) : 0}%)`.padEnd(11)}` +
+        `${row.roomsAfter ?? "-"}${row.preloaded ? "   <- preloaded" : ""}`,
+    )
+  }
+  const strays = [...wins.keys()].filter((addr) => !membersBefore.some((m) => m.addr === addr))
+  for (const addr of strays) {
+    console.log(`  ${addr.padEnd(28)}(not in member records before the batch)  won ${wins.get(addr)}`)
+  }
+
+  const loadedRow = rows.find((row) => row.preloaded)
+  console.log(
+    `\nPreloaded worker took ${loadedRow.won}/${placed} (${placed ? Math.round((loadedRow.observedShare ?? 0) * 100) : 0}%)` +
+      ` against a static-weight expectation of ${(loadedRow.expectedShare * 100).toFixed(1)}%` +
+      (batchFailed ? ` | FAILED CONNECTS ${batchFailed}` : "") +
+      (placed < ROOMS - batchFailed ? ` | ${ROOMS - batchFailed - placed} rooms ownerless` : ""),
+  )
+
+  if (JSON_OUT) {
+    writeFileSync(
+      JSON_OUT,
+      JSON.stringify(
+        { label: LABEL, mode: "spread", preload: PRELOAD, batch: ROOMS, paceMs: PACE_MS, target, rows, failedConnects: batchFailed },
+        null,
+        2,
+      ),
+    )
+    console.log(`\nWrote ${JSON_OUT}`)
+  }
+
+  for (const session of [...preloadSessions, ...batchSessions]) {
+    try {
+      session.client?.close()
+      session.socket?.close()
+    } catch {
+      // Already closed.
+    }
+  }
+
+  console.log(`\nLeaving ${DEPLOYMENT} at ${target} replicas. Reset with:`)
+  console.log(
+    `  kubectl --context ${CONTEXT} -n ${NAMESPACE} scale deploy ${DEPLOYMENT} --replicas=${startReplicas}`,
+  )
+  process.exit(0)
+}
+
+;(SPREAD ? spreadMain() : main()).catch((error) => {
   console.error("Drill failed:", error)
   process.exit(1)
 })

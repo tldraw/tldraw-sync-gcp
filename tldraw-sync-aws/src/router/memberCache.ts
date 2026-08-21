@@ -51,7 +51,7 @@ export class MemberCache {
   live(): LiveMember[] {
     return liveMembers(this.members, Date.now())
       .filter((member) => !this.draining.has(member.addr))
-      .map(({ addr }) => ({ addr }))
+      .map(({ addr, rooms }) => ({ addr, rooms }))
   }
 
   /**

@@ -65,6 +65,16 @@ Both ship. `registry.backend` selects one; the bucket is the default because "S3
 
 **Scaling up now disturbs nothing.** Existing Rooms keep their owner and only new Rooms land on new workers, where the hash ring previously dragged roughly a third of Rooms across pods on a 2→3 scale event. The `tldraw_handover_*` metrics and the local-cluster dashboard panels built on them become reclaim rate, reclaim duration and live member count; the drill becomes "kill a worker and watch its Rooms get reclaimed" rather than "scale up and hope a Room rehashes".
 
+## Amendment (2026-08-21): allocation is load-aware
+
+Allocation — and only allocation — now weighs the pick. `rendezvousPick` scores each live member `-w / ln(h)` with `w = 1/(1 + rooms)`, the standard weighted-rendezvous form: a member wins new Rooms in exact proportion to its weight, and changing one member's weight moves Rooms only to or from that member, never between bystanders. A worker joining a loaded fleet therefore takes nearly all new Rooms until it catches up, and a crashed worker's Rooms reallocate by load rather than uniformly.
+
+The count travels inside the signal each backend already sends. On S3 it rides in the member key — `members/{addr},{rooms}` — so the router's existing `LIST` carries it with no body fetch and no extra request; the key now changes when the count does, so `listMembers` keeps only the freshest key per address (ties, which S3's second-granular `LastModified` makes possible, break deterministically towards the higher count) and a worker deletes its superseded key on each change and every key for its address on drain. On Redis it rides in the member entry the Lua already returns. Costs are unchanged: same PUT rate, and S3 prices the extra DELETEs at zero.
+
+Two honest prices. Router agreement softens from "always" to "whenever their member views agree" — a router one poll behind can briefly weigh differently and pick differently, which the CAS arbitrates exactly as it arbitrates any other race. And this shapes **allocation only**: an owned Room still never moves off a live worker, so a loaded worker sheds load only as its Rooms empty. Rebalancing live Rooms would need a vacate-for-rebalance step this record does not introduce. Measured on `local-cluster` with the drill's spread mode: a worker preloaded with 12 Rooms took **0 of 24** fresh Rooms against a static-weight expectation of 0.9, where unweighted rendezvous would have handed it ~8 — and its 12 preloaded Rooms never moved. See §6 of [`approaches-and-measurements.md`](../../tldraw-sync-aws/docs/approaches-and-measurements.md).
+
+**The Redis backend stays in the loop, deliberately.** The weight rides behind the same `registry.ts` interface on both backends, so nothing above it knows which is running — and the backend comparison above still stands: Redis is the cost-effective choice at scale, roughly 10–20× cheaper than S3 requests at 1,000 Rooms, with the persistence health check covering the liveness/persistence split. `registry.backend` selects it; nothing in this amendment narrows that choice.
+
 ---
 
 _Co-authored by Claude (Opus 5). The conditional-write semantics, the Envoy `ext_authz` → `ORIGINAL_DST` path and the socket-splicing proxy were each verified against real implementations before this record was written; see the design doc's Verification status._

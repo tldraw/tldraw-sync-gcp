@@ -11,6 +11,9 @@ ports:
       - loadbalancer
   # host 8081 -> Envoy Service for the AWS demo. It needs a port of its own
   # rather than :80, which k3s svclb has already bound for ingress-nginx.
+  # A cluster created before this entry does not pick it up on re-apply:
+  #   k3d node edit k3d-tldraw-local-serverlb --port-add 8081:8081
+  # adds it without recreating the cluster.
   # nginx still serves gcp.localhost and grafana.localhost on 8080.
   - port: 8081:8081
     nodeFilters:

@@ -28,6 +28,8 @@ export interface OwnerRecord {
 export interface Member {
   addr: string
   updatedAt: number
+  /** Rooms held, as last heartbeated: the weight input for allocation. */
+  rooms: number
 }
 
 export interface RegistryBackend {

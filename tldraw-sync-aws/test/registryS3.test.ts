@@ -116,10 +116,31 @@ describe("casOwner", () => {
 })
 
 describe("membership", () => {
-  it("encodes the address into the key, since it contains a scheme", async () => {
+  it("encodes the address and the room count into the key", async () => {
     send.mockResolvedValueOnce({})
     await putMember("http://10.0.1.7:3001", 14)
-    expect(send.mock.calls[0][0].input.Key).toBe("members/http%3A%2F%2F10.0.1.7%3A3001")
+    expect(send.mock.calls[0][0].input.Key).toBe("members/http%3A%2F%2F10.0.1.7%3A3001,14")
+  })
+
+  it("deletes the key it previously wrote when the count changes", async () => {
+    send.mockResolvedValue({})
+    await putMember("http://10.0.2.1:3001", 3)
+    send.mockClear()
+    await putMember("http://10.0.2.1:3001", 4)
+    const calls = send.mock.calls.map((call) => [call[0].kind, call[0].input.Key])
+    // PUT first, then DELETE: never a moment with no key at all.
+    expect(calls).toEqual([
+      ["put", "members/http%3A%2F%2F10.0.2.1%3A3001,4"],
+      ["delete", "members/http%3A%2F%2F10.0.2.1%3A3001,3"],
+    ])
+  })
+
+  it("does not delete anything while the count is unchanged", async () => {
+    send.mockResolvedValue({})
+    await putMember("http://10.0.2.2:3001", 5)
+    send.mockClear()
+    await putMember("http://10.0.2.2:3001", 5)
+    expect(send.mock.calls.map((call) => call[0].kind)).toEqual(["put"])
   })
 
   it("writes unconditionally, because a worker is the only writer of its own key", async () => {
@@ -130,20 +151,55 @@ describe("membership", () => {
     expect(input.IfNoneMatch).toBeUndefined()
   })
 
-  it("reads addresses and freshness from LIST alone, with no body fetch", async () => {
+  it("reads address, freshness and room count from LIST alone, with no body fetch", async () => {
     const modified = new Date("2026-08-21T10:00:00.000Z")
     send.mockResolvedValueOnce({
       Contents: [
-        { Key: "members/http%3A%2F%2F10.0.1.7%3A3001", LastModified: modified },
-        { Key: "members/http%3A%2F%2F10.0.1.8%3A3001", LastModified: modified },
+        { Key: "members/http%3A%2F%2F10.0.1.7%3A3001,14", LastModified: modified },
+        { Key: "members/http%3A%2F%2F10.0.1.8%3A3001,0", LastModified: modified },
       ],
     })
     expect(await listMembers()).toEqual([
-      { addr: "http://10.0.1.7:3001", updatedAt: modified.getTime() },
-      { addr: "http://10.0.1.8:3001", updatedAt: modified.getTime() },
+      { addr: "http://10.0.1.7:3001", updatedAt: modified.getTime(), rooms: 14 },
+      { addr: "http://10.0.1.8:3001", updatedAt: modified.getTime(), rooms: 0 },
     ])
     expect(send).toHaveBeenCalledTimes(1)
     expect(send.mock.calls[0][0].input).toMatchObject({ Prefix: "members/" })
+  })
+
+  it("reads a key with no count as zero rooms rather than dropping the worker", async () => {
+    send.mockResolvedValueOnce({
+      Contents: [{ Key: "members/http%3A%2F%2F10.0.1.7%3A3001", LastModified: new Date() }],
+    })
+    expect((await listMembers())[0]).toMatchObject({ addr: "http://10.0.1.7:3001", rooms: 0 })
+  })
+
+  it("keeps only the freshest key when an address appears twice", async () => {
+    send.mockResolvedValueOnce({
+      Contents: [
+        { Key: "members/http%3A%2F%2F10.0.1.7%3A3001,14", LastModified: new Date(1000) },
+        { Key: "members/http%3A%2F%2F10.0.1.7%3A3001,15", LastModified: new Date(2000) },
+      ],
+    })
+    expect(await listMembers()).toEqual([
+      { addr: "http://10.0.1.7:3001", updatedAt: 2000, rooms: 15 },
+    ])
+  })
+
+  it("breaks a LastModified tie towards the higher count, deterministically", async () => {
+    // S3 stamps LastModified to whole seconds, so two writes inside one second
+    // are indistinguishable by age. Any deterministic rule keeps every router
+    // agreeing; the higher count is chosen as the pessimistic weight.
+    const modified = new Date("2026-08-21T10:00:00.000Z")
+    send.mockResolvedValueOnce({
+      Contents: [
+        { Key: "members/http%3A%2F%2F10.0.1.7%3A3001,15", LastModified: modified },
+        { Key: "members/http%3A%2F%2F10.0.1.7%3A3001,14", LastModified: modified },
+      ],
+    })
+    expect(await listMembers()).toEqual([
+      { addr: "http://10.0.1.7:3001", updatedAt: modified.getTime(), rooms: 15 },
+    ])
   })
 
   it("skips entries with no key or no timestamp rather than inventing one", async () => {
@@ -156,12 +212,26 @@ describe("membership", () => {
     expect(await listMembers()).toEqual([])
   })
 
-  it("deletes unconditionally on drain", async () => {
-    send.mockResolvedValueOnce({})
+  it("removes every key for the address on drain, not just the last one written", async () => {
+    send.mockResolvedValueOnce({
+      Contents: [
+        { Key: "members/http%3A%2F%2F10.0.1.7%3A3001,14" },
+        { Key: "members/http%3A%2F%2F10.0.1.7%3A3001,15" },
+      ],
+    })
+    send.mockResolvedValue({})
     await deleteMember("http://10.0.1.7:3001")
-    const { kind, input } = send.mock.calls[0][0]
-    expect(kind).toBe("delete")
-    expect(input.Key).toBe("members/http%3A%2F%2F10.0.1.7%3A3001")
+    const calls = send.mock.calls.map((call) => [
+      call[0].kind,
+      call[0].input.Key ?? call[0].input.Prefix,
+    ])
+    expect(calls).toEqual([
+      // The comma is part of the prefix: without it, an address that is a
+      // string-prefix of another would match the other's keys too.
+      ["list", "members/http%3A%2F%2F10.0.1.7%3A3001,"],
+      ["delete", "members/http%3A%2F%2F10.0.1.7%3A3001,14"],
+      ["delete", "members/http%3A%2F%2F10.0.1.7%3A3001,15"],
+    ])
   })
 })
 
@@ -169,17 +239,17 @@ describe("liveMembers", () => {
   const now = 1_000_000
 
   it("keeps entries inside the TTL", () => {
-    const members = [{ addr: "http://a:1", updatedAt: now - (MEMBER_TTL_MS - 1) }]
+    const members = [{ addr: "http://a:1", updatedAt: now - (MEMBER_TTL_MS - 1), rooms: 0 }]
     expect(liveMembers(members, now)).toHaveLength(1)
   })
 
   it("drops entries at or past the TTL", () => {
-    const members = [{ addr: "http://a:1", updatedAt: now - MEMBER_TTL_MS }]
+    const members = [{ addr: "http://a:1", updatedAt: now - MEMBER_TTL_MS, rooms: 0 }]
     expect(liveMembers(members, now)).toHaveLength(0)
   })
 
   it("tolerates a record stamped slightly ahead, since S3's clock is not ours", () => {
-    const members = [{ addr: "http://a:1", updatedAt: now + 500 }]
+    const members = [{ addr: "http://a:1", updatedAt: now + 500, rooms: 0 }]
     expect(liveMembers(members, now)).toHaveLength(1)
   })
 })

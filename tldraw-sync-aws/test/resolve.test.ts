@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 import { rendezvousPick, resolve } from "../src/router/resolve.js"
 
-const member = (addr: string) => ({ addr })
+const member = (addr: string, rooms = 0) => ({ addr, rooms })
 const A = "http://10.0.1.7:3001"
 const B = "http://10.0.1.8:3001"
 const C = "http://10.0.1.9:3001"
@@ -79,5 +79,44 @@ describe("resolve", () => {
   it("picks the same worker as a bare rendezvous when claiming", () => {
     const live = [member(A), member(B), member(C)]
     expect(resolve("room-1", null, live)).toMatchObject({ addr: rendezvousPick("room-1", live) })
+  })
+})
+
+// The weighting is deterministic — SHA-1 over fixed inputs — so these
+// distribution assertions are exact re-runs, not statistical flake.
+describe("weighted allocation", () => {
+  const share = (picks: (string | null)[], addr: string) =>
+    picks.filter((pick) => pick === addr).length / picks.length
+
+  it("allocates evenly when members carry equal load", () => {
+    const live = [member(A, 5), member(B, 5), member(C, 5)]
+    const picks = Array.from({ length: 3000 }, (_, i) => rendezvousPick(`room-${i}`, live))
+    for (const addr of [A, B, C]) {
+      expect(share(picks, addr)).toBeGreaterThan(0.29)
+      expect(share(picks, addr)).toBeLessThan(0.38)
+    }
+  })
+
+  it("gives a lightly loaded member proportionally more of the new rooms", () => {
+    // Weight is 1/(1+rooms): A at 1 and B at 1/2, so A should take ~2/3.
+    const live = [member(A, 0), member(B, 1)]
+    const picks = Array.from({ length: 2000 }, (_, i) => rendezvousPick(`room-${i}`, live))
+    expect(share(picks, A)).toBeGreaterThan(0.62)
+    expect(share(picks, A)).toBeLessThan(0.72)
+  })
+
+  it("moves rooms only to or from the member whose load changed", () => {
+    const before = [member(A, 0), member(B, 0), member(C, 0)]
+    const after = [member(A, 0), member(B, 0), member(C, 9)]
+    const moves = Array.from({ length: 900 }, (_, i) => `room-${i}`)
+      .map((roomId) => ({
+        was: rendezvousPick(roomId, before),
+        now: rendezvousPick(roomId, after),
+      }))
+      .filter(({ was, now }) => was !== now)
+    // C got heavier, so rooms must actually leave it...
+    expect(moves.length).toBeGreaterThan(0)
+    // ...and every move involves C: nothing shuffles between A and B.
+    for (const { was, now } of moves) expect(was === C || now === C).toBe(true)
   })
 })

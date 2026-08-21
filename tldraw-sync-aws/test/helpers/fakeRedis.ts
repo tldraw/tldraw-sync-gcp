@@ -68,7 +68,7 @@ function listMembers(zsetKey: string, roomsKey: string, ttlMs: number): string[]
 
   const out: string[] = [String(serverNowMs)]
   for (const [addr, score] of [...z].sort((a, b) => a[1] - b[1])) {
-    out.push(addr, String(score))
+    out.push(addr, String(score), hashes.get(roomsKey)?.get(addr) ?? "0")
   }
   return out
 }
@@ -90,9 +90,10 @@ export function createClient() {
       script: string,
       { keys, arguments: args }: { keys: string[]; arguments: string[] },
     ) => {
-      if (script.includes("HGET")) return casOwner(keys[0], args[0], args[1])
+      // Most-distinctive marker first: LIST_MEMBERS also contains HGET now.
       if (script.includes("ZADD")) return putMember(keys[0], keys[1], args[0], args[1])
       if (script.includes("ZRANGEBYSCORE")) return listMembers(keys[0], keys[1], Number(args[0]))
+      if (script.includes("HGET")) return casOwner(keys[0], args[0], args[1])
       throw new Error(`fakeRedis: unrecognised script:\n${script}`)
     },
   }

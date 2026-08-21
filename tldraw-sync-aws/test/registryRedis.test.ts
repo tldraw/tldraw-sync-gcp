@@ -90,6 +90,13 @@ describe("membership", () => {
     expect(bus.roomsFor(A)).toBe("14")
   })
 
+  it("returns each member's room count, for the allocation weight", async () => {
+    await putMember(A, 3)
+    await putMember(B, 7)
+    const members = await listMembers()
+    expect(members.find((m) => m.addr === A)?.rooms).toBe(3)
+    expect(members.find((m) => m.addr === B)?.rooms).toBe(7)
+  })
 
   it("drops entries older than the TTL", async () => {
     await putMember(A, 0)

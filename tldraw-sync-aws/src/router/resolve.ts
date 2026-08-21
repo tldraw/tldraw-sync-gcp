@@ -5,6 +5,8 @@ import { createHash } from "crypto"
 
 export interface LiveMember {
   addr: string
+  /** How many Rooms this worker currently holds; the input to its weight. */
+  rooms: number
 }
 
 export type Resolution =
@@ -12,20 +14,31 @@ export type Resolution =
   | { action: "claim"; addr: string; expect: string | null }
   | { action: "unavailable" }
 
-// Rendezvous (highest random weight) hashing: score every member against the
-// room and take the winner. Two routers racing the same unclaimed Room reach
-// the same answer without talking to each other, and adding a member moves
-// only the rooms that member itself wins.
-function score(roomId: string, addr: string): string {
-  return createHash("sha1").update(`${roomId} ${addr}`).digest("hex")
+// Weighted rendezvous (highest random weight) hashing: score every member
+// against the room and take the winner. Two routers with the same member view
+// reach the same answer without talking to each other; where their views of a
+// weight briefly differ, the CAS arbitrates exactly as it does for any other
+// disagreement. The -w/ln(h) form is the standard one because it keeps both
+// properties that matter here: a member wins new rooms in exact proportion to
+// its weight, and changing one member's weight only moves rooms to or from
+// that member — never between bystanders.
+//
+// The weight itself is the policy: 1/(1+rooms) fills the least-loaded worker
+// fastest and converges as counts equalise. It is the only line to tune.
+function score(roomId: string, member: LiveMember): number {
+  const hex = createHash("sha1").update(`${roomId} ${member.addr}`).digest("hex")
+  // 52 bits of hash, offset so h is strictly inside (0, 1): ln(h) is then
+  // always finite and negative, and the score always finite and positive.
+  const h = (parseInt(hex.slice(0, 13), 16) + 0.5) / 2 ** 52
+  return -(1 / (1 + member.rooms)) / Math.log(h)
 }
 
 export function rendezvousPick(roomId: string, live: LiveMember[]): string | null {
   let bestAddr: string | null = null
-  let bestScore = ""
+  let bestScore = -Infinity
 
   for (const member of live) {
-    const memberScore = score(roomId, member.addr)
+    const memberScore = score(roomId, member)
     // Tie-break on the address so the result cannot depend on iteration order.
     if (memberScore > bestScore || (memberScore === bestScore && member.addr > (bestAddr ?? ""))) {
       bestAddr = member.addr

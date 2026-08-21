@@ -8,7 +8,7 @@ vi.mock("../src/registry.js", () => ({
   listMembers,
   readOwner,
   casOwner,
-  liveMembers: (members: { addr: string; updatedAt: number }[], now: number) =>
+  liveMembers: (members: { addr: string; updatedAt: number; rooms: number }[], now: number) =>
     members.filter((m) => now - m.updatedAt < 8000),
   MEMBER_POLL_INTERVAL_MS: 2000,
   MEMBER_TTL_MS: 8000,
@@ -40,10 +40,17 @@ beforeEach(() => {
 })
 
 describe("MemberCache", () => {
+  it("carries each member's room count through to resolution", async () => {
+    listMembers.mockResolvedValueOnce([{ addr: A, updatedAt: Date.now(), rooms: 14 }])
+    const cache = new MemberCache()
+    await cache.refresh()
+    expect(cache.live()).toEqual([{ addr: A, rooms: 14 }])
+  })
+
   it("exposes only members inside the TTL", async () => {
     listMembers.mockResolvedValueOnce([
-      { addr: A, updatedAt: Date.now() },
-      { addr: B, updatedAt: Date.now() - 9000 },
+      { addr: A, updatedAt: Date.now(), rooms: 0 },
+      { addr: B, updatedAt: Date.now() - 9000, rooms: 0 },
     ])
     const cache = new MemberCache()
     await cache.refresh()
@@ -51,7 +58,7 @@ describe("MemberCache", () => {
   })
 
   it("keeps the last good list when a poll fails, rather than emptying", async () => {
-    listMembers.mockResolvedValueOnce([{ addr: A, updatedAt: Date.now() }])
+    listMembers.mockResolvedValueOnce([{ addr: A, updatedAt: Date.now(), rooms: 0 }])
     const cache = new MemberCache()
     await cache.refresh()
     listMembers.mockRejectedValueOnce(new Error("network"))
@@ -60,7 +67,7 @@ describe("MemberCache", () => {
   })
 
   it("keeps an unreachable worker live — reachability is not liveness", async () => {
-    listMembers.mockResolvedValueOnce([{ addr: A, updatedAt: Date.now() }])
+    listMembers.mockResolvedValueOnce([{ addr: A, updatedAt: Date.now(), rooms: 0 }])
     const cache = new MemberCache()
     await cache.refresh()
     cache.markUnreachable(A)
@@ -69,8 +76,8 @@ describe("MemberCache", () => {
 
   it("drops an unreachable worker from allocation candidates", async () => {
     listMembers.mockResolvedValueOnce([
-      { addr: A, updatedAt: Date.now() },
-      { addr: B, updatedAt: Date.now() },
+      { addr: A, updatedAt: Date.now(), rooms: 0 },
+      { addr: B, updatedAt: Date.now(), rooms: 0 },
     ])
     const cache = new MemberCache()
     await cache.refresh()
@@ -79,7 +86,7 @@ describe("MemberCache", () => {
   })
 
   it("forgets unreachability once the worker heartbeats again", async () => {
-    listMembers.mockResolvedValue([{ addr: A, updatedAt: Date.now() }])
+    listMembers.mockResolvedValue([{ addr: A, updatedAt: Date.now(), rooms: 0 }])
     const cache = new MemberCache()
     await cache.refresh()
     cache.markUnreachable(A)
@@ -92,7 +99,7 @@ describe("MemberCache", () => {
 describe("resolveForConnect", () => {
   async function cacheWith(addrs: string[]) {
     listMembers.mockResolvedValueOnce(
-      addrs.map((addr) => ({ addr, updatedAt: Date.now() })),
+      addrs.map((addr) => ({ addr, updatedAt: Date.now(), rooms: 0 })),
     )
     const cache = new MemberCache()
     await cache.refresh()
@@ -146,7 +153,7 @@ describe("resolveForConnect", () => {
 describe("telling a worker it lost a room", () => {
   async function cacheWith(addrs: string[]) {
     listMembers.mockResolvedValueOnce(
-      addrs.map((addr) => ({ addr, updatedAt: Date.now() })),
+      addrs.map((addr) => ({ addr, updatedAt: Date.now(), rooms: 0 })),
     )
     const cache = new MemberCache()
     await cache.refresh()

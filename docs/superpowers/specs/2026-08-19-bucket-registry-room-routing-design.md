@@ -87,7 +87,7 @@ The request-count difference is real — `N workers × M routers` per interval a
 
 **Clean drains do not wait out the TTL at all.** A draining worker `DELETE`s its member record, so routers drop it at the next 2s poll — see [Drain order](#drain-order). `MEMBER_TTL` governs only crash and hang detection, which is the rarer path. Tuning it trades against spurious eviction, not against deploy speed.
 
-`rooms` is advisory — it lets the router prefer less-loaded workers when allocating, and it is free, since the heartbeat is written anyway.
+`rooms` is no longer advisory: allocation weighs members by `1/(1 + rooms)` via weighted rendezvous, and the count rides in the member key (`members/{addr},{rooms}`) so the `LIST` still carries everything — see ADR 0005's amendment of 2026-08-21.
 
 ### 2. The ownership record — `owners/{roomId}`
 
@@ -408,6 +408,22 @@ Envoy dials Pod IPs directly, as on EKS; k3d's default flannel backend makes the
 | local-cluster (k3d) | A — Envoy | none | none | its AWS `Ingress` | Pod IPs, flannel |
 
 An empty "config delta" column is the deliverable. The "replaces" column is why mode A costs no extra tier anywhere.
+
+### Platform matrix — before and after
+
+The same targets, against what the hash-ring design could offer on each, and where each stands today. A "should work" is reasoned, not demonstrated.
+
+| Platform | Hash-ring design | This design | Status |
+|---|---|---|---|
+| local-cluster (k3d) | ingress-nginx | mode A | **verified** — the only one so far |
+| EKS | self-managed ingress-nginx, because ALB/NLB cannot hash a path (ADR 0002) | mode A | designed, not deployed |
+| GKE | ingress-nginx | mode A | designed, not deployed |
+| GCE MIG | hand-rolled nginx VM tier with a static upstream list, no autoscaling (ADR 0004) | mode A — membership replaces MIG discovery, so autoscaling becomes possible | designed, not deployed |
+| Cloud Run | **incompatible**: no per-instance addressing, so pinned to one instance (ADR 0004) | mode B — each worker its own single-instance service, addr = its service URL | designed, not deployed |
+| Docker / bare `yarn dev` | — | mode B; bare dev needs no router at all | implemented |
+| ECS / Fargate | effectively impossible — ingress-nginx is Kubernetes-only | untargeted, but should work under mode A: `awsvpc` tasks have dialable IPs and nothing here queries a Kubernetes API | untested |
+
+The requirement set behind every row is deliberately small: workers reach the bucket, every worker has a dialable address (or is given its own service URL), and there is somewhere to run Envoy and the router — or just the router in mode B. No Kubernetes API, no cloud DNS, no per-cloud discovery. That is why runtimes this repo never targeted (ECS, Nomad, plain VMs) fall out without new code, where the hash-ring design was structurally Kubernetes-shaped.
 
 ---
 

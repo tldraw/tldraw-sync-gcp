@@ -61,8 +61,9 @@ const PUT_MEMBER = `
   redis.call('HSET', KEYS[2], ARGV[1], ARGV[2])
   return now`
 
-// Returns Redis's current time first, then addr/score pairs. Expired entries
-// are reaped in the same call, so nothing accumulates.
+// Returns Redis's current time first, then addr/score/rooms triples — the
+// room count is the allocation weight, read in the same round trip. Expired
+// entries are reaped in the same call, so nothing accumulates.
 const LIST_MEMBERS = `
   local t = redis.call('TIME')
   local now = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)
@@ -71,8 +72,13 @@ const LIST_MEMBERS = `
   for _, addr in ipairs(dead) do redis.call('HDEL', KEYS[2], addr) end
   redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', '(' .. cutoff)
   local live = redis.call('ZRANGEBYSCORE', KEYS[1], cutoff, '+inf', 'WITHSCORES')
-  table.insert(live, 1, tostring(now))
-  return live`
+  local out = { tostring(now) }
+  for i = 1, #live, 2 do
+    table.insert(out, live[i])
+    table.insert(out, live[i + 1])
+    table.insert(out, redis.call('HGET', KEYS[2], live[i]) or '0')
+  end
+  return out`
 
 export async function readOwner(roomId: string): Promise<OwnerRecord | null> {
   const redis = await ready()
@@ -118,8 +124,12 @@ export async function listMembers(): Promise<Member[]> {
   const localNow = Date.now()
 
   const members: Member[] = []
-  for (let i = 1; i + 1 < raw.length; i += 2) {
-    members.push({ addr: raw[i], updatedAt: localNow - (serverNow - Number(raw[i + 1])) })
+  for (let i = 1; i + 2 < raw.length; i += 3) {
+    members.push({
+      addr: raw[i],
+      updatedAt: localNow - (serverNow - Number(raw[i + 1])),
+      rooms: Number(raw[i + 2]) || 0,
+    })
   }
   return members
 }
